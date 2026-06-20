@@ -73,6 +73,14 @@ class LogCollector:
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
         }
+        window_desc = f"{start_date.date()} ~ {end_date.date()} ({self.api_window_days}d)"
+
+        def _truncate_body(text: str, max_len: int = 500) -> str:
+            if not text:
+                return ""
+            if len(text) <= max_len:
+                return text
+            return text[:max_len] + f"... [truncated, total {len(text)} chars]"
 
         try:
             response = requests.get(
@@ -84,26 +92,56 @@ class LogCollector:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             status_code = e.response.status_code if e.response is not None else "N/A"
-            msg = f"API pull failed: HTTP {status_code} from {self.api_url} — {str(e)}"
+            body_snippet = _truncate_body(e.response.text) if e.response is not None else ""
+            msg = (
+                f"API pull failed: HTTP {status_code}\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}\n"
+                f"  Params:  start_date={params['start_date']}, end_date={params['end_date']}\n"
+                f"  Error:   {str(e)}\n"
+                f"  Body:    {body_snippet}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg) from e
         except requests.exceptions.ConnectionError as e:
-            msg = f"API pull failed: cannot connect to {self.api_url} — {str(e)}"
+            msg = (
+                f"API pull failed: connection error\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}\n"
+                f"  Error:   {str(e)}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg) from e
         except requests.exceptions.Timeout as e:
-            msg = f"API pull failed: timeout requesting {self.api_url} — {str(e)}"
+            msg = (
+                f"API pull failed: request timeout\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}\n"
+                f"  Error:   {str(e)}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg) from e
         except requests.exceptions.RequestException as e:
-            msg = f"API pull failed: {str(e)}"
+            msg = (
+                f"API pull failed: request error\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}\n"
+                f"  Error:   {str(e)}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg) from e
 
         try:
             data = response.json()
         except (json.JSONDecodeError, ValueError) as e:
-            msg = f"API pull failed: invalid JSON response from {self.api_url} — {str(e)}"
+            body_snippet = _truncate_body(response.text)
+            msg = (
+                f"API pull failed: invalid JSON response\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}\n"
+                f"  Error:   {str(e)}\n"
+                f"  Body:    {body_snippet}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg) from e
 
@@ -117,12 +155,22 @@ class LogCollector:
             else:
                 df = pd.DataFrame([data])
         else:
-            msg = f"API pull failed: unexpected response format from {self.api_url}"
+            msg = (
+                f"API pull failed: unexpected response format (type={type(data).__name__})\n"
+                f"  URL:     {self.api_url}\n"
+                f"  Window:  {window_desc}"
+            )
             self.logger.error(msg)
             raise RuntimeError(msg)
 
         if self.date_column and self.date_column in df.columns:
             df = self._filter_by_date_window(df)
+
+        self.logger.info(
+            f"API pull succeeded: {len(df)} records\n"
+            f"  URL:     {self.api_url}\n"
+            f"  Window:  {window_desc}"
+        )
 
         self._collected_data = df
         return df

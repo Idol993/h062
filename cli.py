@@ -836,7 +836,27 @@ def serve(detector, port):
         sys.exit(1)
 
 
-def _build_history_summary(json_files: List[str], model_filter: Optional[str], env_filter: Optional[str]) -> List[Dict[str, Any]]:
+def _build_history_summary(
+    json_files: List[str],
+    model_filter: Optional[str] = None,
+    env_filter: Optional[str] = None,
+    run_tag_filter: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    from datetime import datetime
+
+    def _parse_ts(ts: str) -> Optional[datetime]:
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(ts, fmt)
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    since_dt = _parse_ts(since) if since else None
+    until_dt = _parse_ts(until) if until else None
+
     summaries = []
     for jf in sorted(json_files):
         try:
@@ -848,9 +868,19 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
         meta = data.get("meta") or {}
         model_name = meta.get("model_name", "default_model")
         env_name = meta.get("env", "default_env")
+        run_tag = meta.get("run_tag")
         if model_filter and model_name != model_filter:
             continue
         if env_filter and env_name != env_filter:
+            continue
+        if run_tag_filter and run_tag != run_tag_filter:
+            continue
+
+        ts = data.get("generated_at", "")
+        ts_dt = _parse_ts(ts) if ts else None
+        if since_dt and (not ts_dt or ts_dt < since_dt):
+            continue
+        if until_dt and (not ts_dt or ts_dt > until_dt):
             continue
 
         alerts_arr = data.get("alerts", []) or []
@@ -878,12 +908,20 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
         perf = data.get("performance") or {}
         drops = perf.get("drops", {}) or {}
         acc_drop = drops.get("accuracy")
-        perf_degraded = False
-        if acc_drop is not None:
-            try:
-                perf_degraded = float(acc_drop) > 0.05
-            except (TypeError, ValueError):
+
+        perf_degraded = perf.get("is_degraded")
+        perf_threshold = perf.get("threshold")
+        if perf_degraded is None:
+            if acc_drop is not None:
+                try:
+                    perf_degraded = float(acc_drop) > 0.05
+                except (TypeError, ValueError):
+                    perf_degraded = False
+            else:
                 perf_degraded = False
+        if perf_threshold is None:
+            perf_threshold = 0.05
+
         current_acc = (perf.get("current") or {}).get("accuracy")
         baseline_acc = (perf.get("baseline") or {}).get("accuracy")
 
@@ -892,7 +930,7 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
             "file": os.path.basename(jf),
             "model": model_name,
             "env": env_name,
-            "run_tag": meta.get("run_tag"),
+            "run_tag": run_tag,
             "total_alerts": total_alerts,
             "critical_alerts": critical_alerts,
             "warning_alerts": warning_alerts,
@@ -904,12 +942,58 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
             "accuracy_drop": round(float(acc_drop), 4) if acc_drop is not None else None,
             "accuracy": round(float(current_acc), 4) if current_acc is not None else None,
             "baseline_accuracy": round(float(baseline_acc), 4) if baseline_acc is not None else None,
-            "perf_degraded": perf_degraded,
+            "perf_degraded": bool(perf_degraded),
+            "perf_threshold": float(perf_threshold) if perf_threshold is not None else 0.05,
             "baseline_samples": data.get("baseline_samples"),
             "production_samples": data.get("production_samples"),
             "window_days": meta.get("window_days"),
         })
     return summaries
+
+
+def _aggregate_stats(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    from collections import Counter
+
+    total_runs = len(summaries)
+    total_alerts = sum(s["total_alerts"] for s in summaries)
+    total_critical = sum(s["critical_alerts"] for s in summaries)
+    total_warning = sum(s["warning_alerts"] for s in summaries)
+    total_severe_drift = sum(s["severe_drift"] for s in summaries)
+    total_slight_drift = sum(s["slight_drift"] for s in summaries)
+
+    feature_counter = Counter()
+    for s in summaries:
+        if s["highest_psi_feature"]:
+            feature_counter[s["highest_psi_feature"]] += 1
+
+    top_drift_features = []
+    for feat, cnt in feature_counter.most_common(5):
+        feats = [s for s in summaries if s["highest_psi_feature"] == feat]
+        avg_psi = sum(s["highest_psi"] for s in feats) / len(feats) if feats else 0.0
+        top_drift_features.append({
+            "feature": feat,
+            "count": cnt,
+            "avg_highest_psi": round(avg_psi, 4),
+        })
+
+    perf_degraded_count = sum(1 for s in summaries if s["perf_degraded"])
+    acc_drops = [s["accuracy_drop"] for s in summaries if s["accuracy_drop"] is not None]
+    avg_acc_drop = round(sum(acc_drops) / len(acc_drops), 4) if acc_drops else None
+    max_acc_drop = round(max(acc_drops), 4) if acc_drops else None
+
+    return {
+        "total_runs": total_runs,
+        "total_alerts": total_alerts,
+        "total_critical_alerts": total_critical,
+        "total_warning_alerts": total_warning,
+        "total_severe_drift_occurrences": total_severe_drift,
+        "total_slight_drift_occurrences": total_slight_drift,
+        "top_drift_features": top_drift_features,
+        "perf_degraded_count": perf_degraded_count,
+        "perf_degraded_ratio": round(perf_degraded_count / total_runs, 4) if total_runs else 0.0,
+        "avg_accuracy_drop": avg_acc_drop,
+        "max_accuracy_drop": max_acc_drop,
+    }
 
 
 @cli.command(name="history")
@@ -933,10 +1017,40 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
     help="Filter by environment name",
 )
 @click.option(
+    "--run-tag",
+    type=str,
+    default=None,
+    help="Filter by run tag",
+)
+@click.option(
+    "--since",
+    type=str,
+    default=None,
+    help="Include records from this timestamp (e.g. '2026-06-01' or '2026-06-01T00:00:00')",
+)
+@click.option(
+    "--until",
+    type=str,
+    default=None,
+    help="Include records up to this timestamp",
+)
+@click.option(
+    "--last-days",
+    type=int,
+    default=None,
+    help="Include records from the last N days (overrides --since)",
+)
+@click.option(
     "--export-csv",
     type=click.Path(),
     default=None,
     help="Export all history (after filtering) to a CSV file",
+)
+@click.option(
+    "--export-json",
+    type=click.Path(),
+    default=None,
+    help="Export all history (after filtering) to a JSON file",
 )
 @click.option(
     "--data-dir",
@@ -944,10 +1058,21 @@ def _build_history_summary(json_files: List[str], model_filter: Optional[str], e
     default=".",
     help="Directory containing drift_metrics_*.json files (default: current dir)",
 )
+@click.option(
+    "--summary-only",
+    is_flag=True,
+    default=False,
+    help="Show only the aggregate stats summary, skip the per-run table",
+)
 @click.pass_context
-def history_cmd(ctx, limit: int, model: Optional[str], env: Optional[str], export_csv: Optional[str], data_dir: str):
+def history_cmd(
+    ctx, limit: int, model: Optional[str], env: Optional[str], run_tag: Optional[str],
+    since: Optional[str], until: Optional[str], last_days: Optional[int],
+    export_csv: Optional[str], export_json: Optional[str], data_dir: str,
+    summary_only: bool,
+):
     """
-    📜 List detection history with summaries, support CSV export.
+    📜 List detection history with summaries, advanced filters, and CSV/JSON export.
 
     \b
     Summary columns:
@@ -955,64 +1080,120 @@ def history_cmd(ctx, limit: int, model: Optional[str], env: Optional[str], expor
       - Total alerts (critical / warning)
       - PSI drift counts (severe / slight / no)
       - Highest-PSI feature and value
-      - Accuracy drop and whether model is degraded (>5%)
+      - Accuracy drop and whether model is degraded (per detection threshold)
+
+    \b
+    Time filter examples:
+      history --last-days 7
+      history --since 2026-06-01 --until 2026-06-15
+      history --model credit_risk_v2 --env prod --last-days 30
     """
     try:
+        from datetime import datetime, timedelta
+
+        if last_days is not None:
+            since_dt = datetime.now() - timedelta(days=last_days)
+            since = since_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
         json_files = glob.glob(os.path.join(data_dir, "drift_metrics_*.json"))
         if not json_files:
             console.print("[yellow]⚠️ No drift_metrics_*.json files found in " + data_dir + "[/yellow]")
             return
 
-        all_summaries = _build_history_summary(json_files, model, env)
+        all_summaries = _build_history_summary(
+            json_files, model_filter=model, env_filter=env,
+            run_tag_filter=run_tag, since=since, until=until,
+        )
         if not all_summaries:
             console.print("[yellow]⚠️ No history matched the given filters[/yellow]")
             return
 
         all_summaries.sort(key=lambda r: r["timestamp"], reverse=True)
         display = all_summaries[:limit]
+        stats = _aggregate_stats(all_summaries)
 
         from rich.table import Table
+        from rich.panel import Panel
+        from rich.columns import Columns
+        from rich.console import Group
 
-        table = Table(title=f"Drift Detection History (showing {len(display)} of {len(all_summaries)} runs)", show_lines=True)
-        table.add_column("#", justify="right", style="cyan", no_wrap=True)
-        table.add_column("Timestamp", style="white", no_wrap=True)
-        table.add_column("Model", style="magenta")
-        table.add_column("Env", style="yellow")
-        table.add_column("Run Tag", style="blue")
-        table.add_column("Alerts", justify="center")
-        table.add_column("Drift (S/Sl/No)", justify="center")
-        table.add_column("Top PSI Feature", style="bold")
-        table.add_column("Top PSI", justify="right")
-        table.add_column("Acc Drop", justify="right")
-        table.add_column("Perf Degraded", justify="center")
+        stat_cards = []
+        stat_cards.append(Panel(
+            f"[cyan]Total Runs\n[bold white]{stats['total_runs']}[/bold white]",
+            title="Runs", border_style="cyan", width=18,
+        ))
+        stat_cards.append(Panel(
+            f"[red]Critical Alerts\n[bold white]{stats['total_critical_alerts']}[/bold white]\n"
+            f"[yellow]Warning\n[bold white]{stats['total_warning_alerts']}[/bold white]",
+            title="Total Alerts", border_style="red", width=22,
+        ))
+        stat_cards.append(Panel(
+            f"[red]Severe Drift\n[bold white]{stats['total_severe_drift_occurrences']}[/bold white]\n"
+            f"[yellow]Slight\n[bold white]{stats['total_slight_drift_occurrences']}[/bold white]",
+            title="Drift Occurrences", border_style="yellow", width=22,
+        ))
+        perf_txt = f"[red]YES {stats['perf_degraded_count']}[/red] / {stats['total_runs']}\n"
+        if stats['avg_accuracy_drop'] is not None:
+            perf_txt += f"avg drop [yellow]{stats['avg_accuracy_drop']*100:.2f}%[/yellow]\n"
+        if stats['max_accuracy_drop'] is not None:
+            perf_txt += f"max drop [red]{stats['max_accuracy_drop']*100:.2f}%[/red]"
+        stat_cards.append(Panel(perf_txt, title="Perf Degraded", border_style="magenta", width=22))
 
-        for idx, row in enumerate(display, 1):
-            alerts_str = f"[red]{row['critical_alerts']}[/red]C / [yellow]{row['warning_alerts']}[/yellow]W / {row['total_alerts']}"
-            drift_str = f"[red]{row['severe_drift']}[/red] / [yellow]{row['slight_drift']}[/yellow] / [green]{row['no_drift']}[/green]"
-            psi_color = "red" if row['highest_psi'] > 0.2 else "yellow" if row['highest_psi'] > 0.1 else "green"
-            top_psi_str = f"[{psi_color}]{row['highest_psi']:.4f}[/{psi_color}]"
-            if row['accuracy_drop'] is None:
-                acc_drop_str = "—"
-            else:
-                ad = row['accuracy_drop']
-                ad_color = "red" if ad > 0.05 else "yellow" if ad > 0 else "green"
-                acc_drop_str = f"[{ad_color}]{ad*100:.1f}%[/{ad_color}]"
-            degraded_str = "[red]YES[/red]" if row['perf_degraded'] else "[green]NO[/green]"
-            table.add_row(
-                str(idx),
-                row['timestamp'][:19].replace("T", " "),
-                row['model'],
-                row['env'],
-                row['run_tag'] or "—",
-                alerts_str,
-                drift_str,
-                row['highest_psi_feature'] or "—",
-                top_psi_str,
-                acc_drop_str,
-                degraded_str,
-            )
+        if stats['top_drift_features']:
+            top_feat_lines = []
+            for i, feat in enumerate(stats['top_drift_features'], 1):
+                top_feat_lines.append(
+                    f"{i}. [bold]{feat['feature']}[/bold]  "
+                    f"[cyan]{feat['count']}x[/cyan]  "
+                    f"avg PSI [yellow]{feat['avg_highest_psi']:.4f}[/yellow]"
+                )
+            stat_cards.append(Panel("\n".join(top_feat_lines), title="Top Drift Features", border_style="green", width=36))
 
-        console.print(table)
+        console.print(Panel(Columns(stat_cards, equal=False, expand=True),
+                            title=f"📊 Aggregate Summary  ({len(all_summaries)} runs)",
+                            border_style="bold cyan"))
+
+        if not summary_only:
+            table = Table(title=f"Recent Runs (showing {len(display)} of {len(all_summaries)})", show_lines=True)
+            table.add_column("#", justify="right", style="cyan", no_wrap=True)
+            table.add_column("Timestamp", style="white", no_wrap=True)
+            table.add_column("Model", style="magenta")
+            table.add_column("Env", style="yellow")
+            table.add_column("Run Tag", style="blue")
+            table.add_column("Alerts", justify="center")
+            table.add_column("Drift (S/Sl/No)", justify="center")
+            table.add_column("Top PSI Feature", style="bold")
+            table.add_column("Top PSI", justify="right")
+            table.add_column("Acc Drop", justify="right")
+            table.add_column("Perf Degr", justify="center")
+
+            for idx, row in enumerate(display, 1):
+                alerts_str = f"[red]{row['critical_alerts']}[/red]C / [yellow]{row['warning_alerts']}[/yellow]W / {row['total_alerts']}"
+                drift_str = f"[red]{row['severe_drift']}[/red] / [yellow]{row['slight_drift']}[/yellow] / [green]{row['no_drift']}[/green]"
+                psi_color = "red" if row['highest_psi'] > 0.2 else "yellow" if row['highest_psi'] > 0.1 else "green"
+                top_psi_str = f"[{psi_color}]{row['highest_psi']:.4f}[/{psi_color}]"
+                if row['accuracy_drop'] is None:
+                    acc_drop_str = "—"
+                else:
+                    ad = row['accuracy_drop']
+                    ad_color = "red" if ad > row['perf_threshold'] else "yellow" if ad > 0 else "green"
+                    acc_drop_str = f"[{ad_color}]{ad*100:.1f}%[/{ad_color}]"
+                degraded_str = "[red]YES[/red]" if row['perf_degraded'] else "[green]NO[/green]"
+                table.add_row(
+                    str(idx),
+                    row['timestamp'][:19].replace("T", " "),
+                    row['model'],
+                    row['env'],
+                    row['run_tag'] or "—",
+                    alerts_str,
+                    drift_str,
+                    row['highest_psi_feature'] or "—",
+                    top_psi_str,
+                    acc_drop_str,
+                    degraded_str,
+                )
+
+            console.print(table)
 
         if export_csv:
             import csv
@@ -1022,7 +1203,8 @@ def history_cmd(ctx, limit: int, model: Optional[str], env: Optional[str], expor
                 "severe_drift", "slight_drift", "no_drift",
                 "highest_psi_feature", "highest_psi",
                 "accuracy_drop", "accuracy", "baseline_accuracy",
-                "perf_degraded", "baseline_samples", "production_samples", "window_days",
+                "perf_degraded", "perf_threshold",
+                "baseline_samples", "production_samples", "window_days",
             ]
             with open(export_csv, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1030,6 +1212,19 @@ def history_cmd(ctx, limit: int, model: Optional[str], env: Optional[str], expor
                 for row in all_summaries:
                     writer.writerow(row)
             console.print(f"[green]✓ Exported {len(all_summaries)} records to {export_csv}[/green]")
+
+        if export_json:
+            payload = {
+                "summary": stats,
+                "filters": {
+                    "model": model, "env": env, "run_tag": run_tag,
+                    "since": since, "until": until, "last_days": last_days,
+                },
+                "records": all_summaries,
+            }
+            with open(export_json, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            console.print(f"[green]✓ Exported {len(all_summaries)} records to {export_json}[/green]")
 
     except Exception as e:
         console.print(f"[red]❌ History command failed: {str(e)}[/red]")

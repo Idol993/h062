@@ -155,11 +155,25 @@ class MetricsExporter:
                     model = params.get("model", [None])[0]
                     env = params.get("env", [None])[0]
                     limit = int(params.get("limit", [100])[0])
-                    history = exporter_ref._list_history(model_filter=model, env_filter=env, limit=limit)
+                    days_param = params.get("days", [None])[0]
+                    days = int(days_param) if days_param else None
+                    history = exporter_ref._list_history(model_filter=model, env_filter=env, limit=limit, days=days)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.end_headers()
                     self.wfile.write(json.dumps(history, ensure_ascii=False, default=str).encode("utf-8"))
+                elif path == "/api/model-trend":
+                    from urllib.parse import parse_qs, urlparse
+                    parsed = urlparse(self.path)
+                    params = parse_qs(parsed.query)
+                    model = params.get("model", [None])[0]
+                    env = params.get("env", [None])[0]
+                    days = int(params.get("days", [30])[0])
+                    trend = exporter_ref._get_model_trend(model_filter=model, env_filter=env, days=days)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(trend, ensure_ascii=False, default=str).encode("utf-8"))
                 elif path.startswith("/api/history/"):
                     ts_token = path[len("/api/history/"):]
                     record = exporter_ref._get_history_record(ts_token)
@@ -193,6 +207,7 @@ class MetricsExporter:
         print(f"  Trend data:   http://localhost:{server_port}/api/trend")
         print(f"  Model list:   http://localhost:{server_port}/api/models")
         print(f"  History:      http://localhost:{server_port}/api/history")
+        print(f"  Model trend:  http://localhost:{server_port}/api/model-trend")
 
     def update_psi(self, feature: str, psi_value: float) -> None:
         self._gauges["drift_psi"].labels(feature=feature).set(psi_value)
@@ -343,12 +358,20 @@ class MetricsExporter:
         perf = data.get("performance") or {}
         drops = perf.get("drops", {}) or {}
         acc_drop = drops.get("accuracy")
-        perf_degraded = False
-        if acc_drop is not None:
-            try:
-                perf_degraded = float(acc_drop) > 0.05
-            except (TypeError, ValueError):
+
+        perf_degraded = perf.get("is_degraded")
+        perf_threshold = perf.get("threshold")
+        if perf_degraded is None:
+            if acc_drop is not None:
+                try:
+                    perf_degraded = float(acc_drop) > 0.05
+                except (TypeError, ValueError):
+                    perf_degraded = False
+            else:
                 perf_degraded = False
+        if perf_threshold is None:
+            perf_threshold = 0.05
+
         summary = {
             "timestamp": data.get("generated_at", ""),
             "model": meta.get("model_name", "default_model"),
@@ -363,7 +386,8 @@ class MetricsExporter:
             "highest_psi_feature": highest_feature,
             "highest_psi": round(highest_psi, 4),
             "accuracy_drop": round(float(acc_drop), 4) if acc_drop is not None else None,
-            "perf_degraded": perf_degraded,
+            "perf_degraded": bool(perf_degraded),
+            "perf_threshold": float(perf_threshold),
             "production_samples": data.get("production_samples"),
             "window_days": meta.get("window_days"),
         }
@@ -393,7 +417,20 @@ class MetricsExporter:
             })
         return out
 
-    def _list_history(self, model_filter: Optional[str] = None, env_filter: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    def _list_history(self, model_filter: Optional[str] = None, env_filter: Optional[str] = None,
+                      limit: int = 100, days: Optional[int] = None) -> List[Dict[str, Any]]:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        cutoff = now - timedelta(days=days) if days else None
+
+        def _parse_ts(ts: str) -> Optional[datetime]:
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(ts, fmt)
+                except (ValueError, TypeError):
+                    continue
+            return None
+
         files = self._get_sorted_json_files()
         out = []
         for jf in files[::-1]:
@@ -407,12 +444,95 @@ class MetricsExporter:
                 continue
             if env_filter and meta.get("env", "default_env") != env_filter:
                 continue
+            if cutoff:
+                ts = _parse_ts(data.get("generated_at", ""))
+                if not ts or ts < cutoff:
+                    continue
             summary = self._build_light_summary(data)
             summary["_file"] = os.path.basename(jf)
             out.append(summary)
             if len(out) >= limit:
                 break
         return out
+
+    def _get_model_trend(self, model_filter: Optional[str] = None, env_filter: Optional[str] = None,
+                         days: int = 30) -> List[Dict[str, Any]]:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        cutoff = now - timedelta(days=days)
+
+        def _parse_ts(ts: str) -> Optional[datetime]:
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(ts, fmt)
+                except (ValueError, TypeError):
+                    continue
+            return None
+
+        files = self._get_sorted_json_files()
+        points = []
+        for jf in files:
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            meta = data.get("meta") or {}
+            if model_filter and meta.get("model_name", "default_model") != model_filter:
+                continue
+            if env_filter and meta.get("env", "default_env") != env_filter:
+                continue
+            ts_str = data.get("generated_at", "")
+            ts = _parse_ts(ts_str)
+            if not ts or ts < cutoff:
+                continue
+
+            alerts_arr = data.get("alerts", []) or []
+            drift_results = data.get("drift_results", {}) or {}
+            highest_psi = 0.0
+            highest_feature = None
+            severe = 0
+            slight = 0
+            for feat, res in drift_results.items():
+                psi_info = res.get("psi", {}) or {}
+                v = float(psi_info.get("psi", 0.0) or 0.0)
+                lvl = psi_info.get("level", "no_drift")
+                if v > highest_psi:
+                    highest_psi = v
+                    highest_feature = feat
+                if lvl == "severe_drift":
+                    severe += 1
+                elif lvl == "slight_drift":
+                    slight += 1
+
+            perf = data.get("performance") or {}
+            drops = perf.get("drops", {}) or {}
+            acc = (perf.get("current") or {}).get("accuracy")
+            acc_drop = drops.get("accuracy")
+
+            perf_degraded = perf.get("is_degraded")
+            if perf_degraded is None and acc_drop is not None:
+                try:
+                    perf_degraded = float(acc_drop) > 0.05
+                except (TypeError, ValueError):
+                    perf_degraded = False
+
+            points.append({
+                "timestamp": ts_str,
+                "highest_psi": round(highest_psi, 4),
+                "highest_psi_feature": highest_feature,
+                "accuracy": round(float(acc), 4) if acc is not None else None,
+                "accuracy_drop": round(float(acc_drop), 4) if acc_drop is not None else None,
+                "total_alerts": len(alerts_arr),
+                "critical_alerts": sum(1 for a in alerts_arr if a.get("level") == "critical"),
+                "warning_alerts": sum(1 for a in alerts_arr if a.get("level") == "warning"),
+                "severe_drift": severe,
+                "slight_drift": slight,
+                "no_drift": max(0, len(drift_results) - severe - slight),
+                "perf_degraded": bool(perf_degraded),
+                "production_samples": data.get("production_samples"),
+            })
+        return points
 
     def _get_history_record(self, ts_token: str) -> Optional[Dict[str, Any]]:
         files = self._get_sorted_json_files()
@@ -522,6 +642,11 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
 .kv-item .k { font-size:11px; color:#888; }
 .kv-item .v { font-size:15px; font-weight:bold; color:#333; margin-top:2px; }
 .section-title { font-size:14px; font-weight:700; margin:18px 0 10px; padding-bottom:5px; border-bottom:1px solid #eee; }
+.trend-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:10px; }
+.trend-card { background:#fafafa; border:1px solid #eee; border-radius:8px; padding:10px 12px 6px; }
+.trend-label { font-size:11px; color:#888; margin-bottom:4px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; }
+.trend-card canvas { width:100% !important; height:90px !important; }
+@media (max-width: 700px) { .trend-grid { grid-template-columns:1fr; } }
 .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
 </style>
 </head>
@@ -588,6 +713,12 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
         <button class="modal-close" onclick="closeModal()">Close &times;</button>
         <h2 id="modalTitle">Run Detail</h2>
         <div class="sub-meta" id="modalSubMeta"></div>
+        <div class="section-title">30-Day Trends</div>
+        <div class="trend-grid" id="modalTrendGrid">
+            <div class="trend-card"><div class="trend-label">Highest PSI</div><canvas id="trendPsi"></canvas></div>
+            <div class="trend-card"><div class="trend-label">Accuracy Drop</div><canvas id="trendAccDrop"></canvas></div>
+            <div class="trend-card"><div class="trend-label">Total Alerts</div><canvas id="trendAlerts"></canvas></div>
+        </div>
         <div class="kv-row" id="modalKv"></div>
         <div class="section-title">Feature Drift</div>
         <table id="modalFeatureTable">
@@ -603,6 +734,7 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
 
 <script>
 let chartInstance = null;
+let trendCharts = { psi: null, accDrop: null, alerts: null };
 let allHistory = [];
 let currentToken = null;
 
@@ -730,10 +862,11 @@ async function loadHistory() {
     if (m) params.set('model', m);
     if (e) params.set('env', e);
     params.set('limit', 100);
+    params.set('days', 30);
     const resp = await fetch('/api/history?' + params.toString());
     allHistory = await resp.json();
     const list = $('historyList');
-    if (!allHistory.length) { list.innerHTML = '<div style="padding:30px;text-align:center;color:#aaa;">No history</div>'; return; }
+    if (!allHistory.length) { list.innerHTML = '<div style="padding:30px;text-align:center;color:#aaa;">No history in last 30 days</div>'; return; }
     list.innerHTML = allHistory.map(function(h){
         const token = h._ts_token;
         const active = token === currentToken ? 'active' : '';
@@ -836,9 +969,81 @@ async function openDetail(token) {
         $('modalPerfTitle').style.display = 'none';
     }
 
+    // Load 30-day trend charts for this model
+    const tp = new URLSearchParams();
+    if (s.model) tp.set('model', s.model);
+    if (s.env) tp.set('env', s.env);
+    tp.set('days', 30);
+    fetch('/api/model-trend?' + tp.toString()).then(function(r){ return r.json(); }).then(function(trendData){
+        if (trendData && trendData.length) drawTrendCharts(trendData);
+    }).catch(function(){});
+
     $('modalMask').classList.add('show');
 }
-function closeModal() { $('modalMask').classList.remove('show'); }
+
+function drawTrendCharts(data) {
+    const labels = data.map(function(d){ return (d.timestamp||'').slice(5,16).replace('T',' '); });
+    const commonOpts = {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { ticks: { font: { size: 9 }, maxRotation: 0, autoSkip: Math.max(0, Math.floor(data.length / 6)) },
+            y: { ticks: { font: { size: 10 } }, beginAtZero: true } }
+        },
+        elements: { point: { radius: 2 }, line: { tension: 0.2 } }
+    };
+
+    Object.keys(trendCharts).forEach(function(k){
+        if (trendCharts[k]) { trendCharts[k].destroy(); trendCharts[k] = null; }
+    });
+
+    const psiCtx = $('trendPsi').getContext('2d');
+    trendCharts.psi = new Chart(psiCtx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{ label: 'Highest PSI', data: data.map(function(d){ return d.highest_psi; }),
+                borderColor: '#d62728', backgroundColor: 'rgba(214,39,40,.12)', fill: true }]
+        },
+        options: commonOpts
+    });
+
+    const accCtx = $('trendAccDrop').getContext('2d');
+    const accData = data.map(function(d){ return d.accuracy_drop === null || d.accuracy_drop === undefined ? null : d.accuracy_drop * 100; });
+    trendCharts.accDrop = new Chart(accCtx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{ label: 'Acc Drop (%)', data: accData,
+                borderColor: '#e67e22', backgroundColor: 'rgba(230,126,34,.12)', fill: true }]
+        },
+        options: commonOpts
+    });
+
+    const alCtx = $('trendAlerts').getContext('2d');
+    trendCharts.alerts = new Chart(alCtx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                { label: 'Critical', data: data.map(function(d){ return d.critical_alerts; }),
+                    borderColor: '#d62728', backgroundColor: 'transparent', type: 'line', fill: false },
+                { label: 'Warning', data: data.map(function(d){ return d.warning_alerts; }),
+                    borderColor: '#ff7f0e', backgroundColor: 'transparent', type: 'line', fill: false },
+                { label: 'Total', data: data.map(function(d){ return d.total_alerts; }),
+                    borderColor: '#888', borderDash: [4,3], backgroundColor: 'transparent', fill: false },
+            ]
+        },
+        options: commonOpts
+    });
+}
+
+function closeModal() {
+    $('modalMask').classList.remove('show');
+    Object.keys(trendCharts).forEach(function(k){
+        if (trendCharts[k]) { trendCharts[k].destroy(); trendCharts[k] = null; }
+    });
+}
 
 Promise.all([loadLatest(), loadFilters()]).then(loadHistory);
 setTimeout(function(){ location.reload(); }, 60000);
