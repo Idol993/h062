@@ -140,6 +140,7 @@ class DriftDetector:
         generate_report: bool = True,
         api_url: Optional[str] = None,
         api_window_days: Optional[int] = None,
+        api_retries: int = 0,
         model_name: Optional[str] = None,
         env: Optional[str] = None,
         run_tag: Optional[str] = None,
@@ -188,7 +189,7 @@ class DriftDetector:
                         date_column=date_column,
                         window_days=effective_api_window,
                     )
-                    api_data = log_collector.collect_from_api()
+                    api_data = log_collector.collect_from_api(max_retries=api_retries)
                     if len(api_data) > 0:
                         console.print(f"[green]✓ Pulled {len(api_data)} records from API (window: {effective_api_window} days)[/green]")
                         shared_cols = list(set(production_data.columns) & set(api_data.columns))
@@ -664,6 +665,12 @@ def cli(ctx, config, features, ignore_features):
     help="Time window (days) for API log pull (defaults to --window-days)",
 )
 @click.option(
+    "--api-retries",
+    type=int,
+    default=0,
+    help="Number of retries for API pull on failure (default: 0)",
+)
+@click.option(
     "--model-name",
     type=str,
     default=None,
@@ -700,6 +707,7 @@ def detect(
     no_report,
     api_url,
     api_window_days,
+    api_retries,
     model_name,
     env,
     run_tag,
@@ -725,6 +733,7 @@ def detect(
             generate_report=not no_report,
             api_url=api_url,
             api_window_days=api_window_days,
+            api_retries=api_retries,
             model_name=model_name,
             env=env,
             run_tag=run_tag,
@@ -847,15 +856,31 @@ def _build_history_summary(
     from datetime import datetime
 
     def _parse_ts(ts: str) -> Optional[datetime]:
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
                 return datetime.strptime(ts, fmt)
             except (ValueError, TypeError):
                 continue
         return None
 
-    since_dt = _parse_ts(since) if since else None
-    until_dt = _parse_ts(until) if until else None
+    def _parse_since(ts: str) -> Optional[datetime]:
+        dt = _parse_ts(ts)
+        if dt is None:
+            return None
+        if len(ts.strip()) == 10:
+            return dt
+        return dt
+
+    def _parse_until(ts: str) -> Optional[datetime]:
+        dt = _parse_ts(ts)
+        if dt is None:
+            return None
+        if len(ts.strip()) == 10:
+            return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+
+    since_dt = _parse_since(since) if since else None
+    until_dt = _parse_until(until) if until else None
 
     summaries = []
     for jf in sorted(json_files):
@@ -962,9 +987,12 @@ def _aggregate_stats(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
     total_slight_drift = sum(s["slight_drift"] for s in summaries)
 
     feature_counter = Counter()
+    high_risk_features = set()
     for s in summaries:
         if s["highest_psi_feature"]:
             feature_counter[s["highest_psi_feature"]] += 1
+        if s.get("severe_drift", 0) > 0:
+            high_risk_features.add(s["highest_psi_feature"])
 
     top_drift_features = []
     for feat, cnt in feature_counter.most_common(5):
@@ -989,6 +1017,7 @@ def _aggregate_stats(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_severe_drift_occurrences": total_severe_drift,
         "total_slight_drift_occurrences": total_slight_drift,
         "top_drift_features": top_drift_features,
+        "high_risk_features": sorted(high_risk_features),
         "perf_degraded_count": perf_degraded_count,
         "perf_degraded_ratio": round(perf_degraded_count / total_runs, 4) if total_runs else 0.0,
         "avg_accuracy_drop": avg_acc_drop,
@@ -1228,6 +1257,181 @@ def history_cmd(
 
     except Exception as e:
         console.print(f"[red]❌ History command failed: {str(e)}[/red]")
+        console.print_exception(show_locals=False)
+        sys.exit(1)
+
+
+@cli.command(name="compare")
+@click.option("--model", type=str, default=None, help="Filter by model name")
+@click.option("--env", type=str, default=None, help="Filter by environment name")
+@click.option(
+    "--a-since", type=str, required=True,
+    help="Window A start date (e.g. '2026-06-01')",
+)
+@click.option(
+    "--a-until", type=str, default=None,
+    help="Window A end date (default: midpoint between a-since and b-since)",
+)
+@click.option(
+    "--b-since", type=str, required=True,
+    help="Window B start date (e.g. '2026-06-08')",
+)
+@click.option(
+    "--b-until", type=str, default=None,
+    help="Window B end date (default: now)",
+)
+@click.option("--export-csv", type=click.Path(), default=None, help="Export comparison to CSV")
+@click.option("--export-json", type=click.Path(), default=None, help="Export comparison to JSON")
+@click.option(
+    "--data-dir", type=click.Path(exists=True, file_okay=False), default=".",
+    help="Directory containing drift_metrics_*.json files (default: current dir)",
+)
+@click.pass_context
+def compare_cmd(
+    ctx, model: Optional[str], env: Optional[str],
+    a_since: str, a_until: Optional[str], b_since: str, b_until: Optional[str],
+    export_csv: Optional[str], export_json: Optional[str], data_dir: str,
+):
+    """
+    📊 Compare two time windows side by side (ring-ratio analysis).
+
+    \b
+    Compare metrics between Window A and Window B:
+      - Total runs, alerts, drift occurrences
+      - High-risk feature changes (new / disappeared)
+      - Performance degradation count and accuracy drop
+      - Ring-ratio change for each metric
+
+    \b
+    Example:
+      compare --model credit_risk_v2 --a-since 2026-06-01 --a-until 2026-06-07 --b-since 2026-06-08 --b-until 2026-06-14
+    """
+    try:
+        from datetime import datetime
+
+        json_files = glob.glob(os.path.join(data_dir, "drift_metrics_*.json"))
+        if not json_files:
+            console.print("[yellow]⚠️ No drift_metrics_*.json files found in " + data_dir + "[/yellow]")
+            return
+
+        a_summaries = _build_history_summary(
+            json_files, model_filter=model, env_filter=env,
+            since=a_since, until=a_until or b_since,
+        )
+        b_summaries = _build_history_summary(
+            json_files, model_filter=model, env_filter=env,
+            since=b_since, until=b_until,
+        )
+
+        a_stats = _aggregate_stats(a_summaries) if a_summaries else _aggregate_stats([])
+        b_stats = _aggregate_stats(b_summaries) if b_summaries else _aggregate_stats([])
+
+        from rich.table import Table
+        from rich.panel import Panel
+
+        def _ring_ratio(a_val, b_val):
+            if a_val is None or b_val is None or a_val == 0:
+                return "—"
+            ratio = (b_val - a_val) / abs(a_val)
+            sign = "+" if ratio >= 0 else ""
+            color = "red" if ratio > 0 else "green" if ratio < 0 else "white"
+            return f"[{color}]{sign}{ratio*100:.1f}%[/{color}]"
+
+        def _diff_str(a_val, b_val):
+            if a_val is None or b_val is None:
+                return "—"
+            diff = b_val - a_val
+            sign = "+" if diff >= 0 else ""
+            color = "red" if diff > 0 else "green" if diff < 0 else "white"
+            return f"[{color}]{sign}{diff}[/{color}]"
+
+        a_label = f"{a_since} ~ {a_until or b_since}"
+        b_label = f"{b_since} ~ {b_until or 'now'}"
+
+        metric_rows = [
+            ("Total Runs", a_stats["total_runs"], b_stats["total_runs"], True),
+            ("Total Alerts", a_stats["total_alerts"], b_stats["total_alerts"], True),
+            ("Critical Alerts", a_stats["total_critical_alerts"], b_stats["total_critical_alerts"], True),
+            ("Warning Alerts", a_stats["total_warning_alerts"], b_stats["total_warning_alerts"], True),
+            ("Severe Drift Occ.", a_stats["total_severe_drift_occurrences"], b_stats["total_severe_drift_occurrences"], True),
+            ("Slight Drift Occ.", a_stats["total_slight_drift_occurrences"], b_stats["total_slight_drift_occurrences"], True),
+            ("Perf Degraded", a_stats["perf_degraded_count"], b_stats["perf_degraded_count"], True),
+        ]
+
+        if a_stats["avg_accuracy_drop"] is not None and b_stats["avg_accuracy_drop"] is not None:
+            metric_rows.append(("Avg Acc Drop", a_stats["avg_accuracy_drop"], b_stats["avg_accuracy_drop"], False))
+        if a_stats["max_accuracy_drop"] is not None and b_stats["max_accuracy_drop"] is not None:
+            metric_rows.append(("Max Acc Drop", a_stats["max_accuracy_drop"], b_stats["max_accuracy_drop"], False))
+
+        table = Table(title=f"Window Comparison: A vs B", show_lines=True)
+        table.add_column("Metric", style="bold white")
+        table.add_column(f"Window A\n{a_label}", justify="right", style="cyan")
+        table.add_column(f"Window B\n{b_label}", justify="right", style="cyan")
+        table.add_column("Diff", justify="center")
+        table.add_column("Ring Ratio", justify="center")
+
+        for label, a_v, b_v, is_int in metric_rows:
+            a_str = str(a_v) if is_int else f"{a_v:.4f}"
+            b_str = str(b_v) if is_int else f"{b_v:.4f}"
+            diff = _diff_str(a_v, b_v)
+            ratio = _ring_ratio(a_v, b_v)
+            table.add_row(label, a_str, b_str, diff, ratio)
+
+        console.print(table)
+
+        a_risk = set(a_stats.get("high_risk_features", []))
+        b_risk = set(b_stats.get("high_risk_features", []))
+        new_features = sorted(b_risk - a_risk)
+        disappeared_features = sorted(a_risk - b_risk)
+        stable_features = sorted(a_risk & b_risk)
+
+        if new_features or disappeared_features:
+            feat_lines = []
+            if new_features:
+                feat_lines.append("[red]🔴 New high-risk:[/red] " + ", ".join(f"[bold]{f}[/bold]" for f in new_features))
+            if disappeared_features:
+                feat_lines.append("[green]🟢 Disappeared high-risk:[/green] " + ", ".join(f"[bold]{f}[/bold]" for f in disappeared_features))
+            if stable_features:
+                feat_lines.append("[yellow]🟡 Stable high-risk:[/yellow] " + ", ".join(f"[bold]{f}[/bold]" for f in stable_features))
+            console.print(Panel("\n".join(feat_lines), title="High-Risk Feature Changes", border_style="bold red" if new_features else "yellow"))
+
+        if export_csv:
+            import csv
+            csv_rows = []
+            for label, a_v, b_v, is_int in metric_rows:
+                diff_val = (b_v - a_v) if a_v is not None and b_v is not None else None
+                ratio_val = ((b_v - a_v) / abs(a_v)) if a_v and a_v != 0 and b_v is not None else None
+                csv_rows.append({
+                    "metric": label,
+                    "window_a": a_v, "window_b": b_v,
+                    "diff": diff_val,
+                    "ring_ratio": round(ratio_val, 4) if ratio_val is not None else None,
+                })
+            csv_rows.append({"metric": "new_high_risk_features", "window_a": "", "window_b": ", ".join(new_features), "diff": "", "ring_ratio": ""})
+            csv_rows.append({"metric": "disappeared_high_risk_features", "window_a": ", ".join(disappeared_features), "window_b": "", "diff": "", "ring_ratio": ""})
+            with open(export_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["metric", "window_a", "window_b", "diff", "ring_ratio"])
+                writer.writeheader()
+                for row in csv_rows:
+                    writer.writerow(row)
+            console.print(f"[green]✓ Comparison exported to {export_csv}[/green]")
+
+        if export_json:
+            payload = {
+                "window_a": {"label": a_label, "since": a_since, "until": a_until, "stats": a_stats, "run_count": len(a_summaries)},
+                "window_b": {"label": b_label, "since": b_since, "until": b_until, "stats": b_stats, "run_count": len(b_summaries)},
+                "feature_changes": {
+                    "new_high_risk": new_features,
+                    "disappeared_high_risk": disappeared_features,
+                    "stable_high_risk": stable_features,
+                },
+            }
+            with open(export_json, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+            console.print(f"[green]✓ Comparison exported to {export_json}[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Compare command failed: {str(e)}[/red]")
         console.print_exception(show_locals=False)
         sys.exit(1)
 

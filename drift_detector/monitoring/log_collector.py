@@ -37,6 +37,8 @@ class LogCollector:
         self._callbacks: List[Callable] = []
         self._last_modified: Dict[str, float] = {}
         self.logger = logging.getLogger("drift_log_collector")
+        self._api_failure_count = 0
+        self._api_last_failure_msg = None
 
     def collect(self) -> pd.DataFrame:
         if not self.log_dir:
@@ -64,7 +66,7 @@ class LogCollector:
         self._collected_data = combined
         return combined
 
-    def collect_from_api(self) -> pd.DataFrame:
+    def collect_from_api(self, max_retries: int = 0) -> pd.DataFrame:
         if not self.api_url:
             raise ValueError("No API URL specified for log collection")
 
@@ -82,54 +84,93 @@ class LogCollector:
                 return text
             return text[:max_len] + f"... [truncated, total {len(text)} chars]"
 
-        try:
-            response = requests.get(
-                self.api_url,
-                params=params,
-                headers=self.api_headers,
-                timeout=30,
-            )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response is not None else "N/A"
-            body_snippet = _truncate_body(e.response.text) if e.response is not None else ""
-            msg = (
-                f"API pull failed: HTTP {status_code}\n"
-                f"  URL:     {self.api_url}\n"
-                f"  Window:  {window_desc}\n"
-                f"  Params:  start_date={params['start_date']}, end_date={params['end_date']}\n"
-                f"  Error:   {str(e)}\n"
-                f"  Body:    {body_snippet}"
-            )
-            self.logger.error(msg)
-            raise RuntimeError(msg) from e
-        except requests.exceptions.ConnectionError as e:
-            msg = (
-                f"API pull failed: connection error\n"
-                f"  URL:     {self.api_url}\n"
-                f"  Window:  {window_desc}\n"
-                f"  Error:   {str(e)}"
-            )
-            self.logger.error(msg)
-            raise RuntimeError(msg) from e
-        except requests.exceptions.Timeout as e:
-            msg = (
-                f"API pull failed: request timeout\n"
-                f"  URL:     {self.api_url}\n"
-                f"  Window:  {window_desc}\n"
-                f"  Error:   {str(e)}"
-            )
-            self.logger.error(msg)
-            raise RuntimeError(msg) from e
-        except requests.exceptions.RequestException as e:
-            msg = (
-                f"API pull failed: request error\n"
-                f"  URL:     {self.api_url}\n"
-                f"  Window:  {window_desc}\n"
-                f"  Error:   {str(e)}"
-            )
-            self.logger.error(msg)
-            raise RuntimeError(msg) from e
+        last_error = None
+        attempt = 0
+        response = None
+        total_attempts = max_retries + 1
+
+        for attempt in range(1, total_attempts + 1):
+            req_start = time.time()
+            try:
+                response = requests.get(
+                    self.api_url,
+                    params=params,
+                    headers=self.api_headers,
+                    timeout=30,
+                )
+                elapsed = time.time() - req_start
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                elapsed = time.time() - req_start
+                status_code = e.response.status_code if e.response is not None else "N/A"
+                body_snippet = _truncate_body(e.response.text) if e.response is not None else ""
+                last_error = (
+                    f"API pull failed: HTTP {status_code}\n"
+                    f"  URL:     {self.api_url}\n"
+                    f"  Window:  {window_desc}\n"
+                    f"  Params:  start_date={params['start_date']}, end_date={params['end_date']}\n"
+                    f"  Attempt: {attempt}/{total_attempts}\n"
+                    f"  Elapsed: {elapsed:.2f}s\n"
+                    f"  Error:   {str(e)}\n"
+                    f"  Body:    {body_snippet}"
+                )
+                if attempt < total_attempts:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+            except requests.exceptions.ConnectionError as e:
+                elapsed = time.time() - req_start
+                last_error = (
+                    f"API pull failed: connection error\n"
+                    f"  URL:     {self.api_url}\n"
+                    f"  Window:  {window_desc}\n"
+                    f"  Attempt: {attempt}/{total_attempts}\n"
+                    f"  Elapsed: {elapsed:.2f}s\n"
+                    f"  Error:   {str(e)}"
+                )
+                if attempt < total_attempts:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+            except requests.exceptions.Timeout as e:
+                elapsed = time.time() - req_start
+                last_error = (
+                    f"API pull failed: request timeout\n"
+                    f"  URL:     {self.api_url}\n"
+                    f"  Window:  {window_desc}\n"
+                    f"  Attempt: {attempt}/{total_attempts}\n"
+                    f"  Elapsed: {elapsed:.2f}s\n"
+                    f"  Error:   {str(e)}"
+                )
+                if attempt < total_attempts:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+            except requests.exceptions.RequestException as e:
+                elapsed = time.time() - req_start
+                last_error = (
+                    f"API pull failed: request error\n"
+                    f"  URL:     {self.api_url}\n"
+                    f"  Window:  {window_desc}\n"
+                    f"  Attempt: {attempt}/{total_attempts}\n"
+                    f"  Elapsed: {elapsed:.2f}s\n"
+                    f"  Error:   {str(e)}"
+                )
+                if attempt < total_attempts:
+                    time.sleep(min(2 ** attempt, 10))
+                    continue
+            else:
+                break
+
+        if last_error is not None:
+            self._api_failure_count += 1
+            consecutive_prefix = ""
+            if self._api_failure_count > 1:
+                consecutive_prefix = f"[CONSECUTIVE FAILURE #{self._api_failure_count} for {self.api_url}] "
+            full_msg = consecutive_prefix + last_error
+            self._api_last_failure_msg = last_error
+            self.logger.error(full_msg)
+            print(f"\033[91m{consecutive_prefix}API pull failed for {self.api_url} (attempt {attempt}/{total_attempts})\033[0m")
+            raise RuntimeError(full_msg)
+
+        elapsed = time.time() - req_start if response is not None else 0
 
         try:
             data = response.json()
@@ -139,9 +180,11 @@ class LogCollector:
                 f"API pull failed: invalid JSON response\n"
                 f"  URL:     {self.api_url}\n"
                 f"  Window:  {window_desc}\n"
+                f"  Elapsed: {elapsed:.2f}s\n"
                 f"  Error:   {str(e)}\n"
                 f"  Body:    {body_snippet}"
             )
+            self._api_failure_count += 1
             self.logger.error(msg)
             raise RuntimeError(msg) from e
 
@@ -166,10 +209,13 @@ class LogCollector:
         if self.date_column and self.date_column in df.columns:
             df = self._filter_by_date_window(df)
 
+        self._api_failure_count = 0
+        self._api_last_failure_msg = None
         self.logger.info(
             f"API pull succeeded: {len(df)} records\n"
             f"  URL:     {self.api_url}\n"
-            f"  Window:  {window_desc}"
+            f"  Window:  {window_desc}\n"
+            f"  Elapsed: {elapsed:.2f}s"
         )
 
         self._collected_data = df

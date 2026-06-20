@@ -148,6 +148,12 @@ class MetricsExporter:
                     self.end_headers()
                     models = exporter_ref._list_models()
                     self.wfile.write(json.dumps(models, ensure_ascii=False, default=str).encode("utf-8"))
+                elif path == "/api/model-overview":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    overview = exporter_ref._get_model_overview()
+                    self.wfile.write(json.dumps(overview, ensure_ascii=False, default=str).encode("utf-8"))
                 elif path == "/api/history":
                     from urllib.parse import parse_qs, urlparse
                     parsed = urlparse(self.path)
@@ -206,6 +212,7 @@ class MetricsExporter:
         print(f"  Latest JSON:  http://localhost:{server_port}/api/latest")
         print(f"  Trend data:   http://localhost:{server_port}/api/trend")
         print(f"  Model list:   http://localhost:{server_port}/api/models")
+        print(f"  Model overview: http://localhost:{server_port}/api/model-overview")
         print(f"  History:      http://localhost:{server_port}/api/history")
         print(f"  Model trend:  http://localhost:{server_port}/api/model-trend")
 
@@ -415,6 +422,111 @@ class MetricsExporter:
                 "last_timestamp": data.get("generated_at", ""),
                 "file": os.path.basename(jf),
             })
+        return out
+
+    def _get_model_overview(self) -> List[Dict[str, Any]]:
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        cutoff = now - timedelta(days=30)
+
+        def _parse_ts(ts: str) -> Optional[datetime]:
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(ts, fmt)
+                except (ValueError, TypeError):
+                    continue
+            return None
+
+        files = self._get_sorted_json_files()
+        model_data: Dict[tuple, List[Dict]] = {}
+        for jf in files:
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            ts_str = data.get("generated_at", "")
+            ts = _parse_ts(ts_str)
+            if not ts or ts < cutoff:
+                continue
+            meta = data.get("meta") or {}
+            key = (meta.get("model_name", "default_model"), meta.get("env", "default_env"))
+            model_data.setdefault(key, []).append(data)
+
+        out = []
+        for (model_name, env_name), records in model_data.items():
+            records.sort(key=lambda d: d.get("generated_at", ""))
+            total_runs = len(records)
+            total_alerts = 0
+            total_critical = 0
+            total_severe = 0
+            perf_degraded_count = 0
+            highest_psi = 0.0
+            highest_psi_feature = None
+            last_alert_feature = None
+            last_alert_level = None
+            last_timestamp = ""
+            acc_drops = []
+
+            for rec in records:
+                alerts_arr = rec.get("alerts", []) or []
+                total_alerts += len(alerts_arr)
+                total_critical += sum(1 for a in alerts_arr if a.get("level") == "critical")
+                drift_results = rec.get("drift_results", {}) or {}
+                for feat, res in drift_results.items():
+                    psi_info = res.get("psi", {}) or {}
+                    v = float(psi_info.get("psi", 0.0) or 0.0)
+                    lvl = psi_info.get("level", "no_drift")
+                    if lvl == "severe_drift":
+                        total_severe += 1
+                    if v > highest_psi:
+                        highest_psi = v
+                        highest_psi_feature = feat
+                perf = rec.get("performance") or {}
+                drops = perf.get("drops", {}) or {}
+                acc_drop = drops.get("accuracy")
+                if acc_drop is not None:
+                    acc_drops.append(float(acc_drop))
+                is_degraded = perf.get("is_degraded")
+                if is_degraded is None and acc_drop is not None:
+                    try:
+                        is_degraded = float(acc_drop) > 0.05
+                    except (TypeError, ValueError):
+                        is_degraded = False
+                if is_degraded:
+                    perf_degraded_count += 1
+                last_timestamp = rec.get("generated_at", "")
+
+            if records:
+                last_alerts = records[-1].get("alerts", []) or []
+                if last_alerts:
+                    last_alert_feature = last_alerts[0].get("feature")
+                    last_alert_level = last_alerts[0].get("level")
+
+            health = "healthy"
+            if total_critical > 0 or perf_degraded_count > 0:
+                health = "critical"
+            elif total_severe > 0 or total_alerts > 0:
+                health = "warning"
+
+            out.append({
+                "model": model_name,
+                "env": env_name,
+                "health": health,
+                "total_runs_30d": total_runs,
+                "total_alerts_30d": total_alerts,
+                "total_critical_30d": total_critical,
+                "total_severe_drift_30d": total_severe,
+                "perf_degraded_count_30d": perf_degraded_count,
+                "highest_psi_30d": round(highest_psi, 4),
+                "highest_psi_feature_30d": highest_psi_feature,
+                "avg_accuracy_drop_30d": round(sum(acc_drops) / len(acc_drops), 4) if acc_drops else None,
+                "max_accuracy_drop_30d": round(max(acc_drops), 4) if acc_drops else None,
+                "last_alert_feature": last_alert_feature,
+                "last_alert_level": last_alert_level,
+                "last_timestamp": last_timestamp,
+            })
+        out.sort(key=lambda x: (0 if x["health"] == "critical" else 1 if x["health"] == "warning" else 2, x["model"]))
         return out
 
     def _list_history(self, model_filter: Optional[str] = None, env_filter: Optional[str] = None,
@@ -648,11 +760,36 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
 .trend-card canvas { width:100% !important; height:90px !important; }
 @media (max-width: 700px) { .trend-grid { grid-template-columns:1fr; } }
 .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+.view-tabs { display:flex; gap:0; margin-top:14px; }
+.view-tab { background:rgba(255,255,255,.15); color:#fff; border:1px solid rgba(255,255,255,.25); padding:8px 20px; cursor:pointer; font-size:13px; font-weight:600; transition:background .2s; }
+.view-tab:first-child { border-radius:6px 0 0 6px; }
+.view-tab:last-child { border-radius:0 6px 6px 0; }
+.view-tab.active { background:rgba(255,255,255,.3); border-color:rgba(255,255,255,.5); }
+.view-tab:hover { background:rgba(255,255,255,.2); }
+.overview-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:20px; }
+.model-card { background:#fff; padding:20px; border-radius:10px; box-shadow:0 2px 4px rgba(0,0,0,.05); border-left:4px solid #27ae60; cursor:pointer; transition:box-shadow .2s, transform .15s; }
+.model-card:hover { box-shadow:0 4px 12px rgba(0,0,0,.1); transform:translateY(-1px); }
+.card-header { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+.card-title { font-size:16px; font-weight:700; color:#333; }
+.card-env { font-size:12px; color:#888; background:#f0f0f0; padding:2px 8px; border-radius:10px; }
+.health-badge { font-size:11px; font-weight:700; color:#fff; padding:3px 10px; border-radius:10px; text-transform:uppercase; letter-spacing:0.5px; }
+.card-metrics { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.card-metric { font-size:11px; color:#666; }
+.card-metric .mv { font-size:14px; font-weight:700; color:#333; margin-top:1px; }
+.card-metric .mv.warn { color:#e67e22; }
+.card-metric .mv.crit { color:#c0392b; }
+.health-healthy { color:#27ae60; }
+.health-warning { color:#e67e22; }
+.health-critical { color:#c0392b; }
 </style>
 </head>
 <body>
 <div class="header">
     <h1>🔍 Drift Monitoring Dashboard</h1>
+    <div class="view-tabs">
+        <button class="view-tab active" onclick="switchView('overview')">Model Overview</button>
+        <button class="view-tab" onclick="switchView('detail')">Run Detail</button>
+    </div>
     <div class="meta-bar" id="metaBar">
         <span class="tag">Loading latest detection...</span>
         <a href="/metrics">/metrics</a>
@@ -660,6 +797,12 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
     </div>
 </div>
 
+<div id="overviewView">
+    <div class="overview-grid" id="overviewGrid">
+        <div style="padding:40px;text-align:center;color:#aaa;">Loading model overview...</div>
+    </div>
+</div>
+<div id="detailView" style="display:none;">
 <div class="layout">
     <aside class="sidebar">
         <div class="card">
@@ -703,6 +846,7 @@ th { background:#f8f9fa; font-weight:600; color:#555; }
             </div>
         </div>
     </main>
+</div>
 </div>
 
 <div class="footer">Drift Monitoring Dashboard &mdash; Auto-refreshes every 60s</div>
@@ -910,7 +1054,7 @@ async function openDetail(token) {
         ['Top PSI Feature', s.highest_psi_feature || '\u2014'],
         ['Top PSI Value', fmt(s.highest_psi)],
         ['Accuracy Drop', s.accuracy_drop === null || s.accuracy_drop === undefined ? '\u2014' : pct(s.accuracy_drop)],
-        ['Perf Degraded', s.perf_degraded ? 'Yes (>5%)' : 'No'],
+        ['Perf Degraded', s.perf_degraded ? 'Yes (>' + ((s.perf_threshold || 0.05) * 100).toFixed(0) + '%)' : 'No'],
         ['Production Samples', s.production_samples || '\u2014'],
         ['Window (days)', s.window_days || '\u2014'],
     ];
@@ -950,6 +1094,8 @@ async function openDetail(token) {
     const perf = data.performance;
     if (perf) {
         const cur = perf.current || {}, base = perf.baseline || {}, drops = perf.drops || {};
+        const threshold = (perf.threshold !== null && perf.threshold !== undefined) ? perf.threshold : 0.05;
+        const thresholdPct = (threshold * 100).toFixed(1) + '%';
         $('modalPerfTitle').style.display = '';
         const rows = [
             ['Accuracy', cur.accuracy, base.accuracy, drops.accuracy],
@@ -960,11 +1106,12 @@ async function openDetail(token) {
         $('modalPerf').innerHTML = '<table><thead><tr><th>Metric</th><th>Current</th><th>Baseline</th><th>Drop</th></tr></thead><tbody>' +
             rows.map(function(r){
                 const dc = (r[3] !== null && r[3] !== undefined && !Number.isNaN(Number(r[3])))
-                    ? (r[3] > 0.05 ? '#c0392b' : r[3] > 0 ? '#e67e22' : '#27ae60') : '#999';
+                    ? (r[3] > threshold ? '#c0392b' : r[3] > 0 ? '#e67e22' : '#27ae60') : '#999';
                 const dropStr = (r[3] === null || r[3] === undefined || Number.isNaN(Number(r[3]))) ? '\u2014' : pct(r[3]);
                 return '<tr><td><b>' + r[0] + '</b></td><td>' + pct(r[1]) + '</td><td>' + pct(r[2]) +
                     '</td><td style="color:' + dc + ';font-weight:bold;">' + dropStr + '</td></tr>';
-            }).join('') + '</tbody></table>';
+            }).join('') + '</tbody></table>' +
+            '<div style="font-size:11px;color:#888;margin-top:6px;">Threshold: ' + thresholdPct + '</div>';
     } else {
         $('modalPerfTitle').style.display = 'none';
     }
@@ -1045,7 +1192,69 @@ function closeModal() {
     });
 }
 
-Promise.all([loadLatest(), loadFilters()]).then(loadHistory);
+function metricCell(label, value, cls) {
+    return '<div class="card-metric"><div>' + label + '</div><div class="mv' + (cls ? ' ' + cls : '') + '">' + value + '</div></div>';
+}
+
+async function loadOverview() {
+    var resp = await fetch('/api/model-overview');
+    var models = await resp.json();
+    var grid = $('overviewGrid');
+    if (!models || !models.length) {
+        grid.innerHTML = '<div style="padding:40px;text-align:center;color:#aaa;">No models found in last 30 days</div>';
+        return;
+    }
+    grid.innerHTML = models.map(function(m) {
+        var hc = m.health === 'critical' ? '#c0392b' : m.health === 'warning' ? '#e67e22' : '#27ae60';
+        var hi = m.health === 'critical' ? 'Critical' : m.health === 'warning' ? 'Warning' : 'Healthy';
+        var alertCls = m.total_critical_30d > 0 ? 'crit' : m.total_alerts_30d > 0 ? 'warn' : '';
+        var sevCls = m.total_severe_drift_30d > 0 ? 'crit' : '';
+        var perfCls = m.perf_degraded_count_30d > 0 ? 'crit' : '';
+        return '<div class="model-card" style="border-left-color:' + hc + ';" onclick="selectModel(\'' + m.model + '\',\'' + m.env + '\')">' +
+            '<div class="card-header">' +
+                '<span class="card-title">' + m.model + '</span>' +
+                '<span class="card-env">' + m.env + '</span>' +
+                '<span class="health-badge" style="background:' + hc + ';">' + hi + '</span>' +
+            '</div>' +
+            '<div class="card-metrics">' +
+                metricCell('Runs (30d)', m.total_runs_30d) +
+                metricCell('Alerts', m.total_alerts_30d, alertCls) +
+                metricCell('Critical', m.total_critical_30d, alertCls) +
+                metricCell('Severe Drift', m.total_severe_drift_30d, sevCls) +
+                metricCell('Perf Degraded', m.perf_degraded_count_30d, perfCls) +
+                metricCell('Highest PSI', (m.highest_psi_feature_30d || '\u2014') + ' ' + fmt(m.highest_psi_30d)) +
+                metricCell('Avg Acc Drop', m.avg_accuracy_drop_30d !== null && m.avg_accuracy_drop_30d !== undefined ? pct(m.avg_accuracy_drop_30d) : '\u2014') +
+                metricCell('Max Acc Drop', m.max_accuracy_drop_30d !== null && m.max_accuracy_drop_30d !== undefined ? pct(m.max_accuracy_drop_30d) : '\u2014') +
+                metricCell('Last Alert', m.last_alert_feature ? m.last_alert_feature + ' (' + (m.last_alert_level || '') + ')' : '\u2014') +
+                metricCell('Last Run', m.last_timestamp ? m.last_timestamp.slice(0, 19).replace('T', ' ') : '\u2014') +
+            '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function switchView(view) {
+    var ov = $('overviewView');
+    var dv = $('detailView');
+    document.querySelectorAll('.view-tab').forEach(function(t) { t.classList.remove('active'); });
+    if (view === 'overview') {
+        ov.style.display = '';
+        dv.style.display = 'none';
+        document.querySelectorAll('.view-tab')[0].classList.add('active');
+    } else {
+        ov.style.display = 'none';
+        dv.style.display = '';
+        document.querySelectorAll('.view-tab')[1].classList.add('active');
+    }
+}
+
+function selectModel(model, env) {
+    $('modelSelect').value = model;
+    $('envSelect').value = env;
+    switchView('detail');
+    loadHistory();
+}
+
+Promise.all([loadLatest(), loadFilters()]).then(function() { loadHistory(); loadOverview(); });
 setTimeout(function(){ location.reload(); }, 60000);
 </script>
 </body>
