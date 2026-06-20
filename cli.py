@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import json
+import glob
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -138,9 +139,21 @@ class DriftDetector:
         generate_plots: bool = True,
         generate_report: bool = True,
         api_url: Optional[str] = None,
-        api_window_days: int = 7,
+        api_window_days: Optional[int] = None,
+        model_name: Optional[str] = None,
+        env: Optional[str] = None,
+        run_tag: Optional[str] = None,
     ) -> Dict[str, Any]:
         start_time = time.time()
+
+        run_meta = {
+            "model_name": model_name or "default_model",
+            "env": env or "default_env",
+            "run_tag": run_tag,
+            "window_days": window_days,
+            "baseline_file": os.path.basename(baseline_path),
+            "production_file": os.path.basename(production_path),
+        }
 
         with Progress(
             SpinnerColumn(),
@@ -167,15 +180,17 @@ class DriftDetector:
 
             if api_url:
                 console.print("\n[cyan]🌐 Pulling prediction logs from API...[/cyan]")
+                effective_api_window = api_window_days if api_window_days is not None else window_days
                 try:
                     log_collector = LogCollector(
                         api_url=api_url,
-                        api_window_days=api_window_days,
+                        api_window_days=effective_api_window,
                         date_column=date_column,
+                        window_days=effective_api_window,
                     )
                     api_data = log_collector.collect_from_api()
                     if len(api_data) > 0:
-                        console.print(f"[green]✓ Pulled {len(api_data)} records from API[/green]")
+                        console.print(f"[green]✓ Pulled {len(api_data)} records from API (window: {effective_api_window} days)[/green]")
                         shared_cols = list(set(production_data.columns) & set(api_data.columns))
                         if shared_cols:
                             production_data = pd.concat(
@@ -189,8 +204,13 @@ class DriftDetector:
                         console.print("[yellow]⚠️ API returned 0 records[/yellow]")
                 except RuntimeError as e:
                     console.print(f"[red]❌ {str(e)}[/red]")
+                    if self.notifier.logger:
+                        self.notifier.logger.error(str(e))
                 except Exception as e:
-                    console.print(f"[red]❌ API log pull error: {str(e)}[/red]")
+                    msg = f"API log pull error: {str(e)}"
+                    console.print(f"[red]❌ {msg}[/red]")
+                    if self.notifier.logger:
+                        self.notifier.logger.error(msg)
                 progress.update(load_task, advance=5)
             else:
                 progress.update(load_task, advance=5)
@@ -399,6 +419,7 @@ class DriftDetector:
                     baseline_samples=len(baseline_data),
                     production_samples=len(production_data),
                     date_range=self.production_loader.get_date_range(),
+                    run_meta=run_meta,
                 )
                 console.print(f"[green]✓ HTML report: {report_files['html_path']}[/green]")
                 console.print(f"[green]✓ JSON metrics: {report_files['json_path']}[/green]")
@@ -424,6 +445,7 @@ class DriftDetector:
 
         latest_summary = {
             "generated_at": TimeUtils.get_iso_timestamp(),
+            "meta": run_meta,
             "drift_results": drift_results,
             "performance": performance_result,
             "alert_summary": alert_summary,
@@ -432,6 +454,9 @@ class DriftDetector:
 
         console.print("\n" + "=" * 60)
         console.print("[bold]📊 Detection Summary[/bold]")
+        console.print(f"  Model: [cyan]{run_meta['model_name']}[/cyan]  |  Env: [cyan]{run_meta['env']}[/cyan]")
+        if run_meta.get("run_tag"):
+            console.print(f"  Run Tag: [cyan]{run_meta['run_tag']}[/cyan]")
         console.print(f"  Features analyzed: {len(drift_results)}")
         console.print(f"  Total alerts: {alert_summary['total']}")
         if alert_summary["critical"] > 0:
@@ -442,6 +467,7 @@ class DriftDetector:
         console.print("=" * 60 + "\n")
 
         return {
+            "meta": run_meta,
             "drift_results": drift_results,
             "alerts": [a.__dict__ for a in alerts],
             "alert_summary": alert_summary,
@@ -634,8 +660,26 @@ def cli(ctx, config, features, ignore_features):
 @click.option(
     "--api-window-days",
     type=int,
-    default=7,
-    help="Time window (days) for API log pull",
+    default=None,
+    help="Time window (days) for API log pull (defaults to --window-days)",
+)
+@click.option(
+    "--model-name",
+    type=str,
+    default=None,
+    help="Model name to tag this detection run (e.g. credit_risk_v2)",
+)
+@click.option(
+    "--env",
+    type=str,
+    default=None,
+    help="Environment name to tag this detection run (e.g. prod/staging/canary)",
+)
+@click.option(
+    "--run-tag",
+    type=str,
+    default=None,
+    help="Optional tag for this run (e.g. weekly_check, experiment_A)",
 )
 @click.pass_obj
 def detect(
@@ -656,6 +700,9 @@ def detect(
     no_report,
     api_url,
     api_window_days,
+    model_name,
+    env,
+    run_tag,
 ):
     """
     🔍 Detect feature drift and model performance decay.
@@ -678,6 +725,9 @@ def detect(
             generate_report=not no_report,
             api_url=api_url,
             api_window_days=api_window_days,
+            model_name=model_name,
+            env=env,
+            run_tag=run_tag,
         )
         return result
     except Exception as e:
@@ -783,6 +833,207 @@ def serve(detector, port):
         detector.serve(port=port)
     except Exception as e:
         console.print(f"[red]❌ Server failed: {str(e)}[/red]")
+        sys.exit(1)
+
+
+def _build_history_summary(json_files: List[str], model_filter: Optional[str], env_filter: Optional[str]) -> List[Dict[str, Any]]:
+    summaries = []
+    for jf in sorted(json_files):
+        try:
+            with open(jf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        meta = data.get("meta") or {}
+        model_name = meta.get("model_name", "default_model")
+        env_name = meta.get("env", "default_env")
+        if model_filter and model_name != model_filter:
+            continue
+        if env_filter and env_name != env_filter:
+            continue
+
+        alerts_arr = data.get("alerts", []) or []
+        total_alerts = len(alerts_arr)
+        critical_alerts = sum(1 for a in alerts_arr if a.get("level") == "critical")
+        warning_alerts = sum(1 for a in alerts_arr if a.get("level") == "warning")
+
+        drift_results = data.get("drift_results", {}) or {}
+        highest_psi_feature = None
+        highest_psi_value = 0.0
+        severe_drift_count = 0
+        slight_drift_count = 0
+        for feature, results in drift_results.items():
+            psi_res = results.get("psi", {}) or {}
+            psi_val = psi_res.get("psi", 0.0)
+            level = psi_res.get("level", "no_drift")
+            if psi_val > highest_psi_value:
+                highest_psi_value = psi_val
+                highest_psi_feature = feature
+            if level == "severe_drift":
+                severe_drift_count += 1
+            elif level == "slight_drift":
+                slight_drift_count += 1
+
+        perf = data.get("performance") or {}
+        drops = perf.get("drops", {}) or {}
+        acc_drop = drops.get("accuracy")
+        perf_degraded = False
+        if acc_drop is not None:
+            try:
+                perf_degraded = float(acc_drop) > 0.05
+            except (TypeError, ValueError):
+                perf_degraded = False
+        current_acc = (perf.get("current") or {}).get("accuracy")
+        baseline_acc = (perf.get("baseline") or {}).get("accuracy")
+
+        summaries.append({
+            "timestamp": data.get("generated_at", ""),
+            "file": os.path.basename(jf),
+            "model": model_name,
+            "env": env_name,
+            "run_tag": meta.get("run_tag"),
+            "total_alerts": total_alerts,
+            "critical_alerts": critical_alerts,
+            "warning_alerts": warning_alerts,
+            "severe_drift": severe_drift_count,
+            "slight_drift": slight_drift_count,
+            "no_drift": max(0, len(drift_results) - severe_drift_count - slight_drift_count),
+            "highest_psi_feature": highest_psi_feature,
+            "highest_psi": round(highest_psi_value, 4),
+            "accuracy_drop": round(float(acc_drop), 4) if acc_drop is not None else None,
+            "accuracy": round(float(current_acc), 4) if current_acc is not None else None,
+            "baseline_accuracy": round(float(baseline_acc), 4) if baseline_acc is not None else None,
+            "perf_degraded": perf_degraded,
+            "baseline_samples": data.get("baseline_samples"),
+            "production_samples": data.get("production_samples"),
+            "window_days": meta.get("window_days"),
+        })
+    return summaries
+
+
+@cli.command(name="history")
+@click.option(
+    "--limit",
+    "-n",
+    type=int,
+    default=10,
+    help="Number of recent runs to show (default: 10)",
+)
+@click.option(
+    "--model",
+    type=str,
+    default=None,
+    help="Filter by model name",
+)
+@click.option(
+    "--env",
+    type=str,
+    default=None,
+    help="Filter by environment name",
+)
+@click.option(
+    "--export-csv",
+    type=click.Path(),
+    default=None,
+    help="Export all history (after filtering) to a CSV file",
+)
+@click.option(
+    "--data-dir",
+    type=click.Path(exists=True, file_okay=False),
+    default=".",
+    help="Directory containing drift_metrics_*.json files (default: current dir)",
+)
+@click.pass_context
+def history_cmd(ctx, limit: int, model: Optional[str], env: Optional[str], export_csv: Optional[str], data_dir: str):
+    """
+    📜 List detection history with summaries, support CSV export.
+
+    \b
+    Summary columns:
+      - Timestamp / Model / Env / Run Tag
+      - Total alerts (critical / warning)
+      - PSI drift counts (severe / slight / no)
+      - Highest-PSI feature and value
+      - Accuracy drop and whether model is degraded (>5%)
+    """
+    try:
+        json_files = glob.glob(os.path.join(data_dir, "drift_metrics_*.json"))
+        if not json_files:
+            console.print("[yellow]⚠️ No drift_metrics_*.json files found in " + data_dir + "[/yellow]")
+            return
+
+        all_summaries = _build_history_summary(json_files, model, env)
+        if not all_summaries:
+            console.print("[yellow]⚠️ No history matched the given filters[/yellow]")
+            return
+
+        all_summaries.sort(key=lambda r: r["timestamp"], reverse=True)
+        display = all_summaries[:limit]
+
+        from rich.table import Table
+
+        table = Table(title=f"Drift Detection History (showing {len(display)} of {len(all_summaries)} runs)", show_lines=True)
+        table.add_column("#", justify="right", style="cyan", no_wrap=True)
+        table.add_column("Timestamp", style="white", no_wrap=True)
+        table.add_column("Model", style="magenta")
+        table.add_column("Env", style="yellow")
+        table.add_column("Run Tag", style="blue")
+        table.add_column("Alerts", justify="center")
+        table.add_column("Drift (S/Sl/No)", justify="center")
+        table.add_column("Top PSI Feature", style="bold")
+        table.add_column("Top PSI", justify="right")
+        table.add_column("Acc Drop", justify="right")
+        table.add_column("Perf Degraded", justify="center")
+
+        for idx, row in enumerate(display, 1):
+            alerts_str = f"[red]{row['critical_alerts']}[/red]C / [yellow]{row['warning_alerts']}[/yellow]W / {row['total_alerts']}"
+            drift_str = f"[red]{row['severe_drift']}[/red] / [yellow]{row['slight_drift']}[/yellow] / [green]{row['no_drift']}[/green]"
+            psi_color = "red" if row['highest_psi'] > 0.2 else "yellow" if row['highest_psi'] > 0.1 else "green"
+            top_psi_str = f"[{psi_color}]{row['highest_psi']:.4f}[/{psi_color}]"
+            if row['accuracy_drop'] is None:
+                acc_drop_str = "—"
+            else:
+                ad = row['accuracy_drop']
+                ad_color = "red" if ad > 0.05 else "yellow" if ad > 0 else "green"
+                acc_drop_str = f"[{ad_color}]{ad*100:.1f}%[/{ad_color}]"
+            degraded_str = "[red]YES[/red]" if row['perf_degraded'] else "[green]NO[/green]"
+            table.add_row(
+                str(idx),
+                row['timestamp'][:19].replace("T", " "),
+                row['model'],
+                row['env'],
+                row['run_tag'] or "—",
+                alerts_str,
+                drift_str,
+                row['highest_psi_feature'] or "—",
+                top_psi_str,
+                acc_drop_str,
+                degraded_str,
+            )
+
+        console.print(table)
+
+        if export_csv:
+            import csv
+            fieldnames = [
+                "timestamp", "file", "model", "env", "run_tag",
+                "total_alerts", "critical_alerts", "warning_alerts",
+                "severe_drift", "slight_drift", "no_drift",
+                "highest_psi_feature", "highest_psi",
+                "accuracy_drop", "accuracy", "baseline_accuracy",
+                "perf_degraded", "baseline_samples", "production_samples", "window_days",
+            ]
+            with open(export_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in all_summaries:
+                    writer.writerow(row)
+            console.print(f"[green]✓ Exported {len(all_summaries)} records to {export_csv}[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ History command failed: {str(e)}[/red]")
+        console.print_exception(show_locals=False)
         sys.exit(1)
 
 

@@ -1,0 +1,6 @@
+timestamp,file,model,env,run_tag,total_alerts,critical_alerts,warning_alerts,severe_drift,slight_drift,no_drift,highest_psi_feature,highest_psi,accuracy_drop,accuracy,baseline_accuracy,perf_degraded,baseline_samples,production_samples,window_days
+2026-06-21T05:29:53.524335,drift_metrics_20260621_052953.json,credit_risk_v2,prod,weekly_check_2026w25,11,6,5,2,1,4,transaction_count,0.6455,0.068,0.852,0.92,True,5000,2923,30
+2026-06-21T04:52:46.798800,drift_metrics_20260621_045246.json,default_model,default_env,,11,6,5,2,1,4,transaction_count,0.6455,0.068,0.852,0.92,True,,,
+2026-06-21T04:52:05.470077,drift_metrics_20260621_045205.json,default_model,default_env,,11,6,5,2,1,4,transaction_count,0.6455,0.068,0.852,0.92,True,,,
+2026-06-21T04:41:24.466223,drift_metrics_20260621_044124.json,default_model,default_env,,9,4,5,1,1,4,age,0.4356,0.067,0.852,0.919,True,,,
+2026-06-21T04:38:59.251865,drift_metrics_20260621_043859.json,default_model,default_env,,10,5,5,2,1,4,transaction_count,0.6455,,,,False,,,

@@ -147,6 +147,7 @@ class HTMLReport:
         json_data = {
             "timestamp": timestamp,
             "generated_at": TimeUtils.get_iso_timestamp(),
+            "meta": kwargs.get("run_meta"),
             "drift_results": drift_results,
             "alerts": [
                 {
@@ -163,6 +164,8 @@ class HTMLReport:
             ],
             "performance": performance_result,
             "validation": validation_result,
+            "baseline_samples": kwargs.get("baseline_samples"),
+            "production_samples": kwargs.get("production_samples"),
         }
 
         with open(json_path, "w", encoding="utf-8") as f:
