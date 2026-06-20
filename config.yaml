@@ -1,0 +1,43 @@
+features:
+  numerical:
+    - age
+    - income
+    - account_balance
+    - transaction_count
+  categorical:
+    - gender
+    - occupation
+    - region
+
+thresholds:
+  psi:
+    warning: 0.1
+    critical: 0.2
+  p_value: 0.05
+  performance_drop: 0.05
+
+notifications:
+  terminal:
+    enabled: true
+  webhook:
+    enabled: false
+    url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
+  log_file:
+    enabled: true
+    path: "drift_alerts.log"
+    max_bytes: 10485760
+    backup_count: 5
+
+visualization:
+  output_dir: "plots"
+  dpi: 100
+  figsize: [12, 6]
+
+monitoring:
+  prometheus_port: 8000
+  slide_window_days: 7
+
+scheduling:
+  enabled: false
+  interval: "daily"
+  time: "08:00"
