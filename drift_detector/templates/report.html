@@ -365,7 +365,7 @@
             <div class="performance-metrics">
                 <div class="perf-metric">
                     <div class="current">{{ "%.2f%%"|format(performance.current.accuracy * 100) }}</div>
-                    <div class="baseline">Baseline: {{ "%.2f%%"|format(performance.baseline.accuracy * 100) }}</div>
+                    <div class="baseline">Baseline: {% if performance.baseline.accuracy is not none %}{{ "%.2f%%"|format(performance.baseline.accuracy * 100) }}{% else %}—{% endif %}</div>
                     <div class="drop {% if performance.drops.accuracy > 0 %}positive{% else %}negative{% endif %}">
                         {% if performance.drops.accuracy > 0 %}
                         ▼ {{ "%.2f%%"|format(performance.drops.accuracy * 100) }} drop
@@ -377,24 +377,24 @@
                 </div>
                 <div class="perf-metric">
                     <div class="current">{{ "%.2f%%"|format(performance.current.f1 * 100) }}</div>
-                    <div class="baseline">Baseline: {{ "%.2f%%"|format(performance.baseline.f1 * 100) }}</div>
-                    <div class="drop {% if performance.drops.f1 and performance.drops.f1 > 0 %}positive{% else %}negative{% endif %}">
-                        {% if performance.drops.f1 and performance.drops.f1 > 0 %}
+                    <div class="baseline">Baseline: {% if performance.baseline.f1 is not none %}{{ "%.2f%%"|format(performance.baseline.f1 * 100) }}{% else %}—{% endif %}</div>
+                    <div class="drop {% if performance.drops.f1 is not none and performance.drops.f1 > 0 %}positive{% elif performance.drops.f1 is not none %}negative{% endif %}">
+                        {% if performance.drops.f1 is not none and performance.drops.f1 > 0 %}
                         ▼ {{ "%.2f%%"|format(performance.drops.f1 * 100) }} drop
-                        {% elif performance.drops.f1 %}
+                        {% elif performance.drops.f1 is not none %}
                         ▲ {{ "%.2f%%"|format(-performance.drops.f1 * 100) }} improvement
                         {% endif %}
                     </div>
                     <div class="metric-label">F1 Score</div>
                 </div>
                 <div class="perf-metric">
-                    <div class="current">{{ "%.2f%%"|format(performance.current.precision * 100) }}</div>
-                    <div class="baseline">Baseline: {{ "%.2f%%"|format(performance.baseline.precision * 100) }}</div>
+                    <div class="current">{% if performance.current.precision is not none %}{{ "%.2f%%"|format(performance.current.precision * 100) }}{% else %}—{% endif %}</div>
+                    <div class="baseline">Baseline: {% if performance.baseline.precision is not none %}{{ "%.2f%%"|format(performance.baseline.precision * 100) }}{% else %}—{% endif %}</div>
                     <div class="metric-label">Precision</div>
                 </div>
                 <div class="perf-metric">
-                    <div class="current">{{ "%.2f%%"|format(performance.current.recall * 100) }}</div>
-                    <div class="baseline">Baseline: {{ "%.2f%%"|format(performance.baseline.recall * 100) }}</div>
+                    <div class="current">{% if performance.current.recall is not none %}{{ "%.2f%%"|format(performance.current.recall * 100) }}{% else %}—{% endif %}</div>
+                    <div class="baseline">Baseline: {% if performance.baseline.recall is not none %}{{ "%.2f%%"|format(performance.baseline.recall * 100) }}{% else %}—{% endif %}</div>
                     <div class="metric-label">Recall</div>
                 </div>
             </div>

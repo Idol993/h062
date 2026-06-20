@@ -55,7 +55,9 @@ class PerformanceTracker:
         current_metrics = self._calculate_metrics(y_true, y_pred)
 
         accuracy_drop = self.baseline_accuracy - current_metrics["accuracy"]
-        f1_drop = self.baseline_f1 - current_metrics["f1"] if self.baseline_f1 else None
+        f1_drop = (self.baseline_f1 - current_metrics["f1"]) if self.baseline_f1 is not None else None
+        precision_drop = (self.baseline_precision - current_metrics["precision"]) if self.baseline_precision is not None else None
+        recall_drop = (self.baseline_recall - current_metrics["recall"]) if self.baseline_recall is not None else None
 
         is_degraded = accuracy_drop > self.threshold
 
@@ -70,6 +72,8 @@ class PerformanceTracker:
             "drops": {
                 "accuracy": float(accuracy_drop),
                 "f1": float(f1_drop) if f1_drop is not None else None,
+                "precision": float(precision_drop) if precision_drop is not None else None,
+                "recall": float(recall_drop) if recall_drop is not None else None,
             },
             "threshold": self.threshold,
             "is_degraded": bool(is_degraded),

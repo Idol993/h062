@@ -1,0 +1,663 @@
+{
+  "timestamp": "20260621_045205",
+  "generated_at": "2026-06-21T04:52:05.470077",
+  "drift_results": {
+    "age": {
+      "type": "numerical",
+      "psi": {
+        "psi": 0.4355987834488356,
+        "baseline_ratios": [
+          0.0994,
+          0.0998,
+          0.1008,
+          0.0966,
+          0.1006,
+          0.102,
+          0.0992,
+          0.1014,
+          0.0988,
+          0.1014
+        ],
+        "production_ratios": [
+          0.047211768730756075,
+          0.04858022579541567,
+          0.04413274033527198,
+          0.057133082449538145,
+          0.06842285323297982,
+          0.08313376667807047,
+          0.0742387957577831,
+          0.11871365035921998,
+          0.13718782073212452,
+          0.3212452959288402
+        ],
+        "bin_contributions": [
+          0.038854603418955545,
+          0.03687575899694109,
+          0.0468035545649728,
+          0.02072784413895552,
+          0.012402532474336873,
+          0.003858557056104128,
+          0.007235033677099423,
+          0.002729344665073735,
+          0.012600930233352377,
+          0.2535106242230441
+        ],
+        "bin_edges": [
+          2.6,
+          22.3,
+          26.7,
+          29.770000000000003,
+          32.6,
+          35.1,
+          37.7,
+          40.2,
+          43.4,
+          47.7,
+          74.3
+        ],
+        "n_bins": 10,
+        "level": "severe_drift"
+      },
+      "ks": {
+        "statistic": 0.2769197399931577,
+        "p_value": 4.889729703086396e-125,
+        "alpha": 0.05,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "baseline_size": 5000,
+        "production_size": 2923
+      }
+    },
+    "income": {
+      "type": "numerical",
+      "psi": {
+        "psi": 0.1394906107397911,
+        "baseline_ratios": [
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1
+        ],
+        "production_ratios": [
+          0.2186110160793705,
+          0.13102976394115634,
+          0.09921313718782074,
+          0.08689702360588436,
+          0.0759493670886076,
+          0.07115976736229901,
+          0.07937050975025658,
+          0.0759493670886076,
+          0.0762914813547725,
+          0.08552856654122477
+        ],
+        "bin_contributions": [
+          0.0927684965137386,
+          0.008385927662557136,
+          6.216018821199191e-06,
+          0.0018402659306461942,
+          0.006616408246396832,
+          0.009812675518528526,
+          0.004766305513920183,
+          0.006616408246396832,
+          0.0064157361667929345,
+          0.0022621709219926606
+        ],
+        "bin_edges": [
+          1164.0,
+          40263.089,
+          47196.586,
+          52014.015,
+          55911.092000000004,
+          59738.245,
+          63478.144,
+          67606.48099999999,
+          72641.68600000002,
+          79385.63000000002,
+          112935.83
+        ],
+        "n_bins": 10,
+        "level": "slight_drift"
+      },
+      "ks": {
+        "statistic": 0.15557940472117687,
+        "p_value": 2.017217001972541e-39,
+        "alpha": 0.05,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "baseline_size": 5000,
+        "production_size": 2923
+      }
+    },
+    "account_balance": {
+      "type": "numerical",
+      "psi": {
+        "psi": 0.0993677578646039,
+        "baseline_ratios": [
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1,
+          0.1
+        ],
+        "production_ratios": [
+          0.19876838864180638,
+          0.12452959288402327,
+          0.08689702360588436,
+          0.09271296613068765,
+          0.09066028053369826,
+          0.08518645227505987,
+          0.0756072528224427,
+          0.0738966814916182,
+          0.07834416695176188,
+          0.09339719466301745
+        ],
+        "bin_contributions": [
+          0.06785092831437259,
+          0.005381135175761559,
+          0.0018402659306461942,
+          0.0005513504725825312,
+          0.0009157673962968525,
+          0.0023750231562616954,
+          0.006820650463133975,
+          0.007896312958002262,
+          0.005285293780374758,
+          0.00045103021717148245
+        ],
+        "bin_edges": [
+          -8755.79,
+          12347.456,
+          16823.47,
+          19767.16,
+          22528.838,
+          25099.175,
+          27516.98,
+          30212.202,
+          33456.798,
+          37979.193,
+          59289.1
+        ],
+        "n_bins": 10,
+        "level": "no_drift"
+      },
+      "ks": {
+        "statistic": 0.12874615121450564,
+        "p_value": 4.2044554769560175e-27,
+        "alpha": 0.05,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "baseline_size": 5000,
+        "production_size": 2923
+      }
+    },
+    "transaction_count": {
+      "type": "numerical",
+      "psi": {
+        "psi": 0.6454892283861857,
+        "baseline_ratios": [
+          0.0688,
+          0.1084,
+          0.0814,
+          0.095,
+          0.1038,
+          0.1108,
+          0.0974,
+          0.0866,
+          0.127,
+          0.1208
+        ],
+        "production_ratios": [
+          0.23263770099213138,
+          0.22921655833048238,
+          0.111871365035922,
+          0.09750256585699624,
+          0.08963393773520356,
+          0.0732124529592884,
+          0.06089633937735203,
+          0.042080054738282587,
+          0.04447485460143688,
+          0.01847417037290455
+        ],
+        "bin_contributions": [
+          0.19959995960193805,
+          0.09047216730575586,
+          0.009689114372810864,
+          6.507122325446118e-05,
+          0.0020786139838469627,
+          0.015574822804088666,
+          0.017144059069665946,
+          0.0321311996243538,
+          0.0865905917153033,
+          0.19214362868516788
+        ],
+        "bin_edges": [
+          4.0,
+          10.0,
+          12.0,
+          13.0,
+          14.0,
+          15.0,
+          16.0,
+          17.0,
+          18.0,
+          20.0,
+          30.0
+        ],
+        "n_bins": 10,
+        "level": "severe_drift"
+      },
+      "ks": {
+        "statistic": 0.317628190215532,
+        "p_value": 4.550663326437901e-165,
+        "alpha": 0.05,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "baseline_size": 5000,
+        "production_size": 2923
+      }
+    },
+    "gender": {
+      "type": "categorical",
+      "psi": {
+        "psi": 0.0019118899419238336,
+        "baseline_ratios": [
+          0.5104,
+          0.4896
+        ],
+        "production_ratios": [
+          0.48853917208347586,
+          0.5114608279165241
+        ],
+        "bin_contributions": [
+          0.0009569593872952337,
+          0.0009549305546285998
+        ],
+        "categories": [
+          "F",
+          "M"
+        ],
+        "level": "no_drift"
+      },
+      "chi2": {
+        "statistic": 5.589976108077623,
+        "p_value": 0.01806354254824047,
+        "alpha": 0.05,
+        "degrees_of_freedom": 1,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "cramers_v": 0.04373111677163407,
+        "effect_size": "negligible",
+        "categories": [
+          "F",
+          "M"
+        ],
+        "observed_counts": [
+          1428,
+          1495
+        ],
+        "expected_counts": [
+          1491.8991999999998,
+          1431.1008
+        ],
+        "baseline_size": 2923,
+        "production_size": 2923
+      }
+    },
+    "occupation": {
+      "type": "categorical",
+      "psi": {
+        "psi": 0.05322587858628489,
+        "baseline_ratios": [
+          0.1542,
+          0.3048,
+          0.1948,
+          0.149,
+          0.1972
+        ],
+        "production_ratios": [
+          0.108450222374273,
+          0.24940130003421143,
+          0.2606910708176531,
+          0.1460827916524119,
+          0.23537461512145055
+        ],
+        "bin_contributions": [
+          0.016102053915518076,
+          0.011112568040271116,
+          0.019198198872721794,
+          5.768131550439984e-05,
+          0.006755376442269506
+        ],
+        "categories": [
+          "doctor",
+          "engineer",
+          "manager",
+          "student",
+          "teacher"
+        ],
+        "level": "no_drift"
+      },
+      "chi2": {
+        "statistic": 156.02164375008812,
+        "p_value": 1.0423584953585574e-32,
+        "alpha": 0.05,
+        "degrees_of_freedom": 4,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "cramers_v": 0.23103512753995378,
+        "effect_size": "small",
+        "categories": [
+          "doctor",
+          "engineer",
+          "manager",
+          "student",
+          "teacher"
+        ],
+        "observed_counts": [
+          317,
+          729,
+          762,
+          427,
+          688
+        ],
+        "expected_counts": [
+          450.7266,
+          890.9304000000001,
+          569.4004,
+          435.527,
+          576.4155999999999
+        ],
+        "baseline_size": 2923,
+        "production_size": 2923
+      }
+    },
+    "region": {
+      "type": "categorical",
+      "psi": {
+        "psi": 0.018255363311721944,
+        "baseline_ratios": [
+          0.2902,
+          0.2504,
+          0.2574,
+          0.202
+        ],
+        "production_ratios": [
+          0.3044816968867602,
+          0.19979473144030105,
+          0.298323640095792,
+          0.19739993157714678
+        ],
+        "bin_contributions": [
+          0.0006861018036984333,
+          0.011425108090062953,
+          0.006038186623475202,
+          0.00010596679448535462
+        ],
+        "categories": [
+          "east",
+          "north",
+          "south",
+          "west"
+        ],
+        "level": "no_drift"
+      },
+      "chi2": {
+        "statistic": 51.27293450444432,
+        "p_value": 4.2790089105336134e-11,
+        "alpha": 0.05,
+        "degrees_of_freedom": 3,
+        "is_significant": true,
+        "conclusion": "Reject H0: distributions are significantly different",
+        "cramers_v": 0.1324432042881359,
+        "effect_size": "small",
+        "categories": [
+          "east",
+          "north",
+          "south",
+          "west"
+        ],
+        "observed_counts": [
+          890,
+          584,
+          872,
+          577
+        ],
+        "expected_counts": [
+          848.2546000000001,
+          731.9192,
+          752.3802000000001,
+          590.446
+        ],
+        "baseline_size": 2923,
+        "production_size": 2923
+      }
+    }
+  },
+  "alerts": [
+    {
+      "feature": "age",
+      "metric": "PSI",
+      "value": 0.4355987834488356,
+      "threshold": 0.2,
+      "level": "critical",
+      "message": "Severe drift detected in feature 'age': PSI = 0.4356",
+      "timestamp": null,
+      "details": {
+        "psi_value": 0.4355987834488356,
+        "threshold_warning": 0.1,
+        "threshold_critical": 0.2,
+        "level": "severe_drift"
+      }
+    },
+    {
+      "feature": "age",
+      "metric": "KS_test",
+      "value": 4.889729703086396e-125,
+      "threshold": 0.05,
+      "level": "warning",
+      "message": "Significant distribution change in 'age': KS statistic = 0.2769, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 0.2769197399931577,
+        "p_value": 4.889729703086396e-125,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "income",
+      "metric": "PSI",
+      "value": 0.1394906107397911,
+      "threshold": 0.1,
+      "level": "warning",
+      "message": "Slight drift detected in feature 'income': PSI = 0.1395",
+      "timestamp": null,
+      "details": {
+        "psi_value": 0.1394906107397911,
+        "threshold_warning": 0.1,
+        "threshold_critical": 0.2,
+        "level": "slight_drift"
+      }
+    },
+    {
+      "feature": "income",
+      "metric": "KS_test",
+      "value": 2.017217001972541e-39,
+      "threshold": 0.05,
+      "level": "warning",
+      "message": "Significant distribution change in 'income': KS statistic = 0.1556, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 0.15557940472117687,
+        "p_value": 2.017217001972541e-39,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "account_balance",
+      "metric": "KS_test",
+      "value": 4.2044554769560175e-27,
+      "threshold": 0.05,
+      "level": "warning",
+      "message": "Significant distribution change in 'account_balance': KS statistic = 0.1287, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 0.12874615121450564,
+        "p_value": 4.2044554769560175e-27,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "transaction_count",
+      "metric": "PSI",
+      "value": 0.6454892283861857,
+      "threshold": 0.2,
+      "level": "critical",
+      "message": "Severe drift detected in feature 'transaction_count': PSI = 0.6455",
+      "timestamp": null,
+      "details": {
+        "psi_value": 0.6454892283861857,
+        "threshold_warning": 0.1,
+        "threshold_critical": 0.2,
+        "level": "severe_drift"
+      }
+    },
+    {
+      "feature": "transaction_count",
+      "metric": "KS_test",
+      "value": 4.550663326437901e-165,
+      "threshold": 0.05,
+      "level": "critical",
+      "message": "Significant distribution change in 'transaction_count': KS statistic = 0.3176, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 0.317628190215532,
+        "p_value": 4.550663326437901e-165,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "gender",
+      "metric": "Chi2_test",
+      "value": 0.01806354254824047,
+      "threshold": 0.05,
+      "level": "warning",
+      "message": "Significant category distribution change in 'gender': Chi2 = 5.5900, p-value = 0.018064",
+      "timestamp": null,
+      "details": {
+        "statistic": 5.589976108077623,
+        "p_value": 0.01806354254824047,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "occupation",
+      "metric": "Chi2_test",
+      "value": 1.0423584953585574e-32,
+      "threshold": 0.05,
+      "level": "critical",
+      "message": "Significant category distribution change in 'occupation': Chi2 = 156.0216, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 156.02164375008812,
+        "p_value": 1.0423584953585574e-32,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "region",
+      "metric": "Chi2_test",
+      "value": 4.2790089105336134e-11,
+      "threshold": 0.05,
+      "level": "critical",
+      "message": "Significant category distribution change in 'region': Chi2 = 51.2729, p-value = 0.000000",
+      "timestamp": null,
+      "details": {
+        "statistic": 51.27293450444432,
+        "p_value": 4.2790089105336134e-11,
+        "threshold": 0.05,
+        "is_significant": true
+      }
+    },
+    {
+      "feature": "model_performance",
+      "metric": "accuracy_drop",
+      "value": 0.06800000000000006,
+      "threshold": 0.05,
+      "level": "critical",
+      "message": "Model performance moderately degraded: accuracy dropped by 6.80% (threshold: 5%)",
+      "timestamp": null,
+      "details": {
+        "accuracy_drop": 0.06800000000000006,
+        "threshold": 0.05,
+        "severity": "moderate",
+        "current_metrics": {
+          "accuracy": 0.852,
+          "f1": 0.7827788649706459,
+          "precision": 0.7200720072007201,
+          "recall": 0.857449088960343
+        },
+        "baseline_metrics": {
+          "accuracy": 0.92,
+          "f1": 0.9,
+          "precision": null,
+          "recall": null
+        }
+      }
+    }
+  ],
+  "performance": {
+    "current": {
+      "accuracy": 0.852,
+      "f1": 0.7827788649706459,
+      "precision": 0.7200720072007201,
+      "recall": 0.857449088960343
+    },
+    "baseline": {
+      "accuracy": 0.92,
+      "f1": 0.9,
+      "precision": null,
+      "recall": null
+    },
+    "drops": {
+      "accuracy": 0.06800000000000006,
+      "f1": 0.11722113502935416,
+      "precision": null,
+      "recall": null
+    },
+    "threshold": 0.05,
+    "is_degraded": true,
+    "severity": "moderate",
+    "timestamp": "2026-06-21T04:52:02.891307",
+    "sample_size": 3000
+  },
+  "validation": {
+    "valid": true,
+    "errors": [],
+    "warnings": [
+      "Unexpected column: timestamp",
+      "3 values below min (2.6) in age",
+      "9 values above max (74.3) in age",
+      "3 values below min (1164.0) in income",
+      "18 values below min (-8755.79) in account_balance",
+      "1 values above max (59289.1) in account_balance",
+      "5 values below min (4.0) in transaction_count"
+    ],
+    "missing_columns": []
+  }
+}

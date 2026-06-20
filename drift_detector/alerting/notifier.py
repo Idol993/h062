@@ -176,16 +176,7 @@ class Notifier:
             return
 
         for alert in alerts:
-            payload = {
-                "alert": alert.message,
-                "feature": alert.feature,
-                "metric": alert.metric,
-                "value": alert.value,
-                "threshold": alert.threshold,
-                "level": alert.level.value,
-                "timestamp": alert.timestamp,
-                "details": alert.details,
-            }
+            payload = self._build_webhook_payload(alert)
 
             try:
                 response = requests.post(
@@ -195,11 +186,63 @@ class Notifier:
                     timeout=10,
                 )
                 response.raise_for_status()
-            except Exception as e:
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else "N/A"
+                msg = f"Webhook HTTP error: status={status_code}, url={self.webhook_url}, error={str(e)}"
                 if self.logger:
-                    self.logger.error(f"Failed to send webhook: {str(e)}")
+                    self.logger.error(msg)
                 if self.enable_terminal:
-                    self.console.print(f"[red]⚠️ Webhook failed: {str(e)}[/red]")
+                    self.console.print(f"[red]⚠️ {msg}[/red]")
+            except requests.exceptions.ConnectionError as e:
+                msg = f"Webhook connection error: url={self.webhook_url}, error={str(e)}"
+                if self.logger:
+                    self.logger.error(msg)
+                if self.enable_terminal:
+                    self.console.print(f"[red]⚠️ {msg}[/red]")
+            except requests.exceptions.Timeout as e:
+                msg = f"Webhook timeout: url={self.webhook_url}, error={str(e)}"
+                if self.logger:
+                    self.logger.error(msg)
+                if self.enable_terminal:
+                    self.console.print(f"[red]⚠️ {msg}[/red]")
+            except Exception as e:
+                msg = f"Webhook failed: url={self.webhook_url}, error={str(e)}"
+                if self.logger:
+                    self.logger.error(msg)
+                if self.enable_terminal:
+                    self.console.print(f"[red]⚠️ {msg}[/red]")
+
+    def _build_webhook_payload(self, alert: Alert) -> Dict[str, Any]:
+        base = {
+            "alert_type": alert.metric,
+            "feature": alert.feature,
+            "level": alert.level.value,
+            "message": alert.message,
+            "timestamp": alert.timestamp,
+        }
+
+        metric = alert.metric
+        details = alert.details or {}
+
+        if metric == "PSI":
+            base["psi"] = details.get("psi_value", alert.value)
+            base["psi_level"] = details.get("level", "unknown")
+        elif metric == "KS_test":
+            base["p_value"] = details.get("p_value", alert.value)
+            base["statistic"] = details.get("statistic", 0.0)
+        elif metric == "Chi2_test":
+            base["p_value"] = details.get("p_value", alert.value)
+            base["statistic"] = details.get("statistic", 0.0)
+        elif metric == "accuracy_drop":
+            base["accuracy_drop"] = details.get("accuracy_drop", alert.value)
+            base["severity"] = details.get("severity", "unknown")
+            base["current_metrics"] = details.get("current_metrics", {})
+            base["baseline_metrics"] = details.get("baseline_metrics", {})
+        else:
+            base["value"] = alert.value
+            base["threshold"] = alert.threshold
+
+        return base
 
     def send_webhook_async(self, alert: Alert) -> None:
         import threading

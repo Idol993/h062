@@ -2,11 +2,13 @@ from typing import Optional, Dict, Any, List, Callable
 import os
 import time
 import json
+import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import requests
 
 from ..utils.time_utils import TimeUtils
 
@@ -18,16 +20,23 @@ class LogCollector:
         log_file_pattern: str = "*.log",
         date_column: Optional[str] = None,
         window_days: int = 7,
+        api_url: Optional[str] = None,
+        api_window_days: Optional[int] = None,
+        api_headers: Optional[Dict[str, str]] = None,
     ):
         self.log_dir = log_dir
         self.log_file_pattern = log_file_pattern
         self.date_column = date_column
         self.window_days = window_days
+        self.api_url = api_url
+        self.api_window_days = api_window_days or window_days
+        self.api_headers = api_headers or {}
         self._collected_data: Optional[pd.DataFrame] = None
         self._watching = False
         self._watch_thread: Optional[threading.Thread] = None
         self._callbacks: List[Callable] = []
         self._last_modified: Dict[str, float] = {}
+        self.logger = logging.getLogger("drift_log_collector")
 
     def collect(self) -> pd.DataFrame:
         if not self.log_dir:
@@ -52,6 +61,96 @@ class LogCollector:
         combined = pd.concat(data_frames, ignore_index=True)
         combined = self._filter_by_date_window(combined)
 
+        self._collected_data = combined
+        return combined
+
+    def collect_from_api(self) -> pd.DataFrame:
+        if not self.api_url:
+            raise ValueError("No API URL specified for log collection")
+
+        start_date, end_date = TimeUtils.get_sliding_window(self.api_window_days)
+        params = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+
+        try:
+            response = requests.get(
+                self.api_url,
+                params=params,
+                headers=self.api_headers,
+                timeout=30,
+            )
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else "N/A"
+            msg = f"API pull failed: HTTP {status_code} from {self.api_url} — {str(e)}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+        except requests.exceptions.ConnectionError as e:
+            msg = f"API pull failed: cannot connect to {self.api_url} — {str(e)}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+        except requests.exceptions.Timeout as e:
+            msg = f"API pull failed: timeout requesting {self.api_url} — {str(e)}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+        except requests.exceptions.RequestException as e:
+            msg = f"API pull failed: {str(e)}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as e:
+            msg = f"API pull failed: invalid JSON response from {self.api_url} — {str(e)}"
+            self.logger.error(msg)
+            raise RuntimeError(msg) from e
+
+        if isinstance(data, list):
+            df = pd.DataFrame(data)
+        elif isinstance(data, dict):
+            if "data" in data:
+                df = pd.DataFrame(data["data"])
+            elif "records" in data:
+                df = pd.DataFrame(data["records"])
+            else:
+                df = pd.DataFrame([data])
+        else:
+            msg = f"API pull failed: unexpected response format from {self.api_url}"
+            self.logger.error(msg)
+            raise RuntimeError(msg)
+
+        if self.date_column and self.date_column in df.columns:
+            df = self._filter_by_date_window(df)
+
+        self._collected_data = df
+        return df
+
+    def collect_all(self) -> pd.DataFrame:
+        frames = []
+
+        if self.log_dir:
+            try:
+                local_df = self.collect()
+                if local_df is not None and len(local_df) > 0:
+                    frames.append(local_df)
+            except Exception as e:
+                self.logger.warning(f"Local log collection failed: {str(e)}")
+
+        if self.api_url:
+            try:
+                api_df = self.collect_from_api()
+                if api_df is not None and len(api_df) > 0:
+                    frames.append(api_df)
+            except Exception as e:
+                self.logger.warning(f"API log collection failed: {str(e)}")
+
+        if not frames:
+            self._collected_data = pd.DataFrame()
+            return self._collected_data
+
+        combined = pd.concat(frames, ignore_index=True)
         self._collected_data = combined
         return combined
 

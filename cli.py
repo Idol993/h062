@@ -33,6 +33,7 @@ from drift_detector.visualization.dist_plotter import DistributionPlotter
 from drift_detector.visualization.drift_chart import DriftChart
 from drift_detector.visualization.html_report import HTMLReport
 from drift_detector.monitoring.metrics_exporter import MetricsExporter
+from drift_detector.monitoring.log_collector import LogCollector
 
 console = Console()
 
@@ -91,7 +92,8 @@ class DriftDetector:
         self.html_report = HTMLReport(output_dir=".")
 
         self.metrics_exporter = MetricsExporter(
-            port=self.config.monitoring.prometheus_port
+            port=self.config.monitoring.prometheus_port,
+            data_dir=".",
         )
 
         self.scheduler = ReportScheduler()
@@ -126,10 +128,17 @@ class DriftDetector:
         label_file: Optional[str] = None,
         prediction_file: Optional[str] = None,
         baseline_predictions: Optional[str] = None,
+        baseline_labels: Optional[str] = None,
+        baseline_accuracy: Optional[float] = None,
+        baseline_f1: Optional[float] = None,
+        baseline_precision: Optional[float] = None,
+        baseline_recall: Optional[float] = None,
         date_column: Optional[str] = None,
         window_days: int = 7,
         generate_plots: bool = True,
         generate_report: bool = True,
+        api_url: Optional[str] = None,
+        api_window_days: int = 7,
     ) -> Dict[str, Any]:
         start_time = time.time()
 
@@ -154,7 +163,37 @@ class DriftDetector:
             self.production_loader.window_days = window_days
             production_data = self.production_loader.load(production_path)
             console.print(f"[green]✓ Loaded {len(production_data)} production samples[/green]")
-            progress.update(load_task, advance=25)
+            progress.update(load_task, advance=20)
+
+            if api_url:
+                console.print("\n[cyan]🌐 Pulling prediction logs from API...[/cyan]")
+                try:
+                    log_collector = LogCollector(
+                        api_url=api_url,
+                        api_window_days=api_window_days,
+                        date_column=date_column,
+                    )
+                    api_data = log_collector.collect_from_api()
+                    if len(api_data) > 0:
+                        console.print(f"[green]✓ Pulled {len(api_data)} records from API[/green]")
+                        shared_cols = list(set(production_data.columns) & set(api_data.columns))
+                        if shared_cols:
+                            production_data = pd.concat(
+                                [production_data[shared_cols], api_data[shared_cols]],
+                                ignore_index=True,
+                            )
+                            console.print(f"[green]✓ Merged production data: {len(production_data)} total samples[/green]")
+                        else:
+                            console.print("[yellow]⚠️ API data has no matching columns with production data, skipping merge[/yellow]")
+                    else:
+                        console.print("[yellow]⚠️ API returned 0 records[/yellow]")
+                except RuntimeError as e:
+                    console.print(f"[red]❌ {str(e)}[/red]")
+                except Exception as e:
+                    console.print(f"[red]❌ API log pull error: {str(e)}[/red]")
+                progress.update(load_task, advance=5)
+            else:
+                progress.update(load_task, advance=5)
 
             console.print("\n[cyan]🔍 Validating schema...[/cyan]")
             validation_result = self.schema_validator.validate_against_baseline(
@@ -281,23 +320,44 @@ class DriftDetector:
                     label_df = pd.read_csv(label_file)
                     pred_df = pd.read_csv(prediction_file)
 
-                    if baseline_predictions and os.path.exists(baseline_predictions):
+                    baseline_set = False
+                    if baseline_accuracy is not None:
+                        self.performance_tracker.set_baseline_metrics(
+                            accuracy=baseline_accuracy,
+                            f1=baseline_f1,
+                            precision=baseline_precision,
+                            recall=baseline_recall,
+                        )
+                        baseline_set = True
+                        console.print(
+                            f"[green]✓ Baseline set from CLI parameters: "
+                            f"accuracy={baseline_accuracy}"
+                            + (f", f1={baseline_f1}" if baseline_f1 is not None else "")
+                            + (f", precision={baseline_precision}" if baseline_precision is not None else "")
+                            + (f", recall={baseline_recall}" if baseline_recall is not None else "")
+                            + "[/green]"
+                        )
+                    elif baseline_predictions and os.path.exists(baseline_predictions):
                         base_pred_df = pd.read_csv(baseline_predictions)
                         base_pred = base_pred_df.iloc[:, -1].values
-                        baseline_labels_path = baseline_predictions.replace("predictions", "labels")
-                        if os.path.exists(baseline_labels_path):
-                            base_true_df = pd.read_csv(baseline_labels_path)
+                        if baseline_labels and os.path.exists(baseline_labels):
+                            base_true_df = pd.read_csv(baseline_labels)
                             base_true = base_true_df.iloc[:, -1].values
                             base_true = base_true[: len(base_pred)]
                             base_pred = base_pred[: len(base_true)]
                             self.performance_tracker.set_baseline(base_true, base_pred)
-                    elif self.performance_tracker.baseline_accuracy is None:
-                        self.performance_tracker.set_baseline_metrics(accuracy=0.92, f1=0.90)
+                            baseline_set = True
+                            console.print("[green]✓ Baseline set from baseline labels + predictions[/green]")
+                        else:
+                            console.print("[yellow]⚠️ --baseline-labels not provided, cannot compute baseline from prediction file alone[/yellow]")
+
+                    if not baseline_set and self.performance_tracker.baseline_accuracy is None:
+                        console.print("[yellow]⚠️ No baseline performance specified. Use --baseline-accuracy or --baseline-labels + --baseline-predictions. Performance evaluation skipped.[/yellow]")
 
                     y_true = label_df.iloc[:, -1].values
                     y_pred = pred_df.iloc[:, -1].values
 
-                    if len(y_true) == len(y_pred):
+                    if baseline_set and len(y_true) == len(y_pred):
                         performance_result = self.performance_tracker.evaluate(
                             y_true, y_pred, timestamp=TimeUtils.get_iso_timestamp()
                         )
@@ -305,7 +365,7 @@ class DriftDetector:
                             f"[green]✓ Current accuracy: {performance_result['current']['accuracy']:.4f} "
                             f"(drop: {performance_result['drops']['accuracy']:.4f})[/green]"
                         )
-                    else:
+                    elif len(y_true) != len(y_pred):
                         console.print(
                             "[yellow]⚠️ Label and prediction file lengths don't match[/yellow]"
                         )
@@ -349,6 +409,8 @@ class DriftDetector:
 
         self.notifier.notify(alerts)
 
+        alert_summary = self.threshold_checker.get_alert_summary(alerts)
+
         self.metrics_exporter.increment_detection_runs()
         self.metrics_exporter.observe_duration(duration)
         self.metrics_exporter.update_drift_results(drift_results)
@@ -360,7 +422,13 @@ class DriftDetector:
                 f1=performance_result["current"]["f1"],
             )
 
-        alert_summary = self.threshold_checker.get_alert_summary(alerts)
+        latest_summary = {
+            "generated_at": TimeUtils.get_iso_timestamp(),
+            "drift_results": drift_results,
+            "performance": performance_result,
+            "alert_summary": alert_summary,
+        }
+        self.metrics_exporter.update_latest_result(latest_summary)
 
         console.print("\n" + "=" * 60)
         console.print("[bold]📊 Detection Summary[/bold]")
@@ -506,6 +574,36 @@ def cli(ctx, config, features, ignore_features):
     help="Path to baseline predictions for comparison",
 )
 @click.option(
+    "--baseline-labels",
+    "-bl",
+    type=click.Path(exists=False),
+    help="Path to baseline ground-truth labels (used with --baseline-predictions)",
+)
+@click.option(
+    "--baseline-accuracy",
+    type=float,
+    default=None,
+    help="Baseline model accuracy (e.g. 0.92). Alternative to --baseline-predictions.",
+)
+@click.option(
+    "--baseline-f1",
+    type=float,
+    default=None,
+    help="Baseline model F1 score (e.g. 0.90).",
+)
+@click.option(
+    "--baseline-precision",
+    type=float,
+    default=None,
+    help="Baseline model precision.",
+)
+@click.option(
+    "--baseline-recall",
+    type=float,
+    default=None,
+    help="Baseline model recall.",
+)
+@click.option(
     "--date-column",
     type=str,
     help="Name of date column for time window filtering",
@@ -527,6 +625,18 @@ def cli(ctx, config, features, ignore_features):
     is_flag=True,
     help="Disable report generation",
 )
+@click.option(
+    "--api-url",
+    type=str,
+    default=None,
+    help="API endpoint URL to pull prediction logs (e.g. http://api.example.com/predictions)",
+)
+@click.option(
+    "--api-window-days",
+    type=int,
+    default=7,
+    help="Time window (days) for API log pull",
+)
 @click.pass_obj
 def detect(
     detector,
@@ -535,10 +645,17 @@ def detect(
     labels,
     predictions,
     baseline_predictions,
+    baseline_labels,
+    baseline_accuracy,
+    baseline_f1,
+    baseline_precision,
+    baseline_recall,
     date_column,
     window_days,
     no_plots,
     no_report,
+    api_url,
+    api_window_days,
 ):
     """
     🔍 Detect feature drift and model performance decay.
@@ -550,10 +667,17 @@ def detect(
             label_file=labels,
             prediction_file=predictions,
             baseline_predictions=baseline_predictions,
+            baseline_labels=baseline_labels,
+            baseline_accuracy=baseline_accuracy,
+            baseline_f1=baseline_f1,
+            baseline_precision=baseline_precision,
+            baseline_recall=baseline_recall,
             date_column=date_column,
             window_days=window_days,
             generate_plots=not no_plots,
             generate_report=not no_report,
+            api_url=api_url,
+            api_window_days=api_window_days,
         )
         return result
     except Exception as e:
@@ -646,7 +770,14 @@ def schedule(
 @click.pass_obj
 def serve(detector, port):
     """
-    🚀 Start web monitoring server with Prometheus metrics.
+    🚀 Start monitoring server with web dashboard and Prometheus metrics.
+
+    \b
+    Endpoints:
+      /            Web dashboard (latest metrics + PSI trend chart)
+      /metrics     Prometheus metrics endpoint
+      /api/latest  Latest detection result as JSON
+      /api/trend   PSI trend data (last 30 days) as JSON
     """
     try:
         detector.serve(port=port)
